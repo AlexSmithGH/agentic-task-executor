@@ -1,0 +1,134 @@
+# golangci-lint configuration
+# Reference: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+output:
+  formats:
+    - format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+  sort-results: true
+
+linters:
+  enable:
+    # Default linters
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Suggest code simplifications
+    - govet         # Reports suspicious constructs
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Static analysis checks
+    - unused        # Check for unused constants, variables, functions
+    
+    # Additional recommended linters
+    - gofmt         # Check formatting
+    - goimports     # Check import formatting
+    - misspell      # Check for misspelled English words
+    - revive        # General purpose linter
+    - gosec         # Security-focused linter
+    - goconst       # Find repeated strings that could be constants
+    - gocyclo       # Check cyclomatic complexity
+    - bodyclose     # Check HTTP response bodies are closed
+    - unconvert     # Remove unnecessary type conversions
+    - unparam       # Report unused function parameters
+    - prealloc      # Find slice declarations that could be preallocated
+    - exportloopref # Check for pointers to loop variables
+    - godox         # Detect TODO, FIXME, etc.
+    
+  disable:
+    - typecheck     # Handled by compiler
+    - deadcode      # Deprecated, replaced by unused
+    - varcheck      # Deprecated, replaced by unused
+    - structcheck   # Deprecated, replaced by unused
+    - golint        # Deprecated, replaced by revive
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
+    exclude-functions:
+      - (io.Closer).Close
+      - (*database/sql.Rows).Close
+
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # Too noisy for performance optimization
+      - shadow         # Often intentional in Go
+
+  gocyclo:
+    min-complexity: 15
+
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+
+  misspell:
+    locale: US
+
+  revive:
+    confidence: 0.8
+    rules:
+      - name: exported
+        disabled: false
+      - name: package-comments
+        disabled: false
+      - name: var-naming
+        disabled: false
+
+  gosec:
+    excludes:
+      - G204  # Allow subprocess execution (needed for command execution)
+      - G304  # Allow file path from variable (workspace operations)
+    confidence: medium
+
+  goimports:
+    local-prefixes: github.com/alexasmi/agentic-task-executor
+
+issues:
+  exclude-rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - gosec
+        - goconst
+    
+    # Exclude generated code
+    - path: ".*\\.pb\\.go"
+      linters:
+        - goimports
+        - revive
+        - stylecheck
+    
+    # Allow dot imports in Temporal workflow code (idiomatic)
+    - path: internal/workflows/
+      text: "should not use dot imports"
+      linters:
+        - revive
+    
+    # Allow error shadowing in main packages
+    - path: cmd/
+      text: "shadow: declaration of \"err\""
+      linters:
+        - govet
+
+  max-issues-per-linter: 50
+  max-same-issues: 3
+  new: false
+  fix: false
+
+severity:
+  default-severity: error
+  rules:
+    - linters:
+        - godox
+      severity: info
+    - linters:
+        - misspell
+      severity: warning

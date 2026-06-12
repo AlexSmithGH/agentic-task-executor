@@ -1,0 +1,216 @@
+{
+  "project": {
+    "name": "agentic-task-executor",
+    "description": "AI-powered repository automation service using Claude, Temporal, and Go",
+    "language": "go",
+    "framework": "temporal"
+  },
+  "hooks": {
+    "pre-commit": [
+      "make lint",
+      "make test"
+    ],
+    "pre-push": [
+      "make build"
+    ],
+    "post-checkout": [
+      "go mod download"
+    ],
+    "post-merge": [
+      "go mod download",
+      "make build"
+    ]
+  },
+  "context_files": [
+    "README.md",
+    "CLAUDE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/GETTING_STARTED.md",
+    "docs/QUICK_REFERENCE.md",
+    ".env.example"
+  ],
+  "quality_gates": {
+    "lint": {
+      "command": "make lint",
+      "description": "Run golangci-lint with project configuration",
+      "required": true,
+      "timeout": 300
+    },
+    "test": {
+      "command": "make test",
+      "description": "Run all Go tests",
+      "required": true,
+      "timeout": 600
+    },
+    "build": {
+      "command": "make build",
+      "description": "Build API and worker binaries",
+      "required": true,
+      "timeout": 300
+    },
+    "security": {
+      "command": "gosec ./...",
+      "description": "Security scanning with gosec",
+      "required": false,
+      "timeout": 300
+    }
+  },
+  "ai_assistance": {
+    "code_review": {
+      "enabled": true,
+      "focus_areas": [
+        "Temporal workflow determinism",
+        "Error handling and wrapping",
+        "Workspace path validation",
+        "Context handling",
+        "Security (credential exposure, command injection)",
+        "Goroutine leaks",
+        "Resource cleanup (defer patterns)"
+      ]
+    },
+    "suggestions": {
+      "enabled": true,
+      "areas": [
+        "Test coverage improvements",
+        "Documentation updates",
+        "Error message clarity",
+        "Performance optimizations",
+        "Security hardening"
+      ]
+    }
+  },
+  "workflow_patterns": {
+    "temporal": {
+      "determinism_checks": true,
+      "activity_timeout_validation": true,
+      "error_handling_required": true
+    },
+    "testing": {
+      "require_unit_tests": true,
+      "require_integration_tests": false,
+      "coverage_threshold": 70
+    }
+  },
+  "linting": {
+    "config_file": ".golangci.yml",
+    "auto_fix": true,
+    "on_save": true
+  },
+  "formatting": {
+    "tool": "gofmt",
+    "on_save": true,
+    "import_organization": {
+      "enabled": true,
+      "tool": "goimports",
+      "local_prefix": "github.com/alexasmi/agentic-task-executor"
+    }
+  },
+  "build": {
+    "targets": [
+      "bin/api",
+      "bin/worker"
+    ],
+    "docker": {
+      "enabled": true,
+      "file": "Dockerfile",
+      "multi_stage": true
+    }
+  },
+  "dependencies": {
+    "auto_update": false,
+    "security_scanning": true,
+    "vendor": false
+  },
+  "documentation": {
+    "auto_generate": false,
+    "required_sections": [
+      "Overview",
+      "Architecture",
+      "Setup",
+      "API Reference",
+      "Testing"
+    ],
+    "style": "markdown"
+  },
+  "environment": {
+    "example_file": ".env.example",
+    "required_variables": [
+      "GCP_PROJECT_ID",
+      "GCP_REGION",
+      "GITHUB_TOKEN",
+      "TEMPORAL_HOST",
+      "TEMPORAL_TASK_QUEUE"
+    ]
+  },
+  "paths": {
+    "source": "internal/",
+    "commands": "cmd/",
+    "tests": "**/*_test.go",
+    "docs": "docs/",
+    "config": "."
+  },
+  "ignore_patterns": [
+    "bin/",
+    "vendor/",
+    ".git/",
+    "*.log",
+    ".env",
+    "/tmp/agentic-workspaces/"
+  ],
+  "custom_commands": {
+    "dev": {
+      "command": "make dev",
+      "description": "Start full development environment (Temporal + worker + API)"
+    },
+    "docker-up": {
+      "command": "make docker-up",
+      "description": "Start Temporal server with Docker Compose"
+    },
+    "docker-down": {
+      "command": "make docker-down",
+      "description": "Stop Temporal server"
+    },
+    "temporal-ui": {
+      "command": "open http://localhost:8080",
+      "description": "Open Temporal UI in browser"
+    }
+  },
+  "integrations": {
+    "temporal": {
+      "enabled": true,
+      "server": "localhost:7233",
+      "namespace": "default",
+      "task_queue": "agentic-tasks",
+      "ui_url": "http://localhost:8080"
+    },
+    "github": {
+      "enabled": true,
+      "api_version": "v68"
+    },
+    "vertex_ai": {
+      "enabled": true,
+      "project_id": "${GCP_PROJECT_ID}",
+      "region": "${GCP_REGION}"
+    }
+  },
+  "security": {
+    "secret_detection": {
+      "enabled": true,
+      "tools": ["gitleaks"]
+    },
+    "dependency_scanning": {
+      "enabled": true,
+      "tools": ["govulncheck"]
+    },
+    "code_scanning": {
+      "enabled": true,
+      "tools": ["gosec"]
+    }
+  },
+  "notifications": {
+    "build_failures": true,
+    "test_failures": true,
+    "lint_failures": false,
+    "security_alerts": true
+  }
+}

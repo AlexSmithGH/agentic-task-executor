@@ -1,0 +1,27 @@
+# CODEOWNERS file for automated review requests
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+* @alexasmi
+
+# Temporal workflows and activities require careful review
+/internal/workflows/ @alexasmi
+/internal/activities/ @alexasmi
+
+# Security-sensitive areas
+/.github/workflows/ @alexasmi
+/Dockerfile @alexasmi
+/.env.example @alexasmi
+
+# Agent/AI integration
+/internal/agent/ @alexasmi
+
+# Documentation
+/docs/ @alexasmi
+/README.md @alexasmi
+/CLAUDE.md @alexasmi
+
+# Configuration files
+/.golangci.yml @alexasmi
+/.pre-commit-config.yaml @alexasmi
+/.claude/ @alexasmi
