@@ -9,21 +9,12 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/vertex"
+
+	"github.com/alexasmi/agentic-task-executor/internal/models"
 )
 
 type ToolExecutor interface {
 	ExecuteTool(name string, input map[string]any) string
-}
-
-type ToolCall struct {
-	Name  string         `json:"name"`
-	Input map[string]any `json:"input"`
-}
-
-type AgentLoopResult struct {
-	FinalResponse string         `json:"final_response"`
-	Iterations    int            `json:"iterations"`
-	ToolCalls     []ToolCall     `json:"tool_calls"`
 }
 
 type ClaudeClient struct {
@@ -66,12 +57,12 @@ func (c *ClaudeClient) CreateMessage(ctx context.Context, messages []anthropic.M
 	return c.client.Messages.New(ctx, params)
 }
 
-func (c *ClaudeClient) RunAgentLoop(ctx context.Context, initialPrompt, systemPrompt string, tools []anthropic.ToolUnionParam, executor ToolExecutor, maxIterations int) (*AgentLoopResult, error) {
+func (c *ClaudeClient) RunAgentLoop(ctx context.Context, initialPrompt, systemPrompt string, tools []anthropic.ToolUnionParam, executor ToolExecutor, maxIterations int) (*models.AgentLoopResult, error) {
 	messages := []anthropic.MessageParam{
 		anthropic.NewUserMessage(anthropic.NewTextBlock(initialPrompt)),
 	}
 
-	var allToolCalls []ToolCall
+	var allToolCalls []models.ToolCall
 
 	slog.Info("Starting agent loop", "max_iterations", maxIterations)
 
@@ -83,7 +74,6 @@ func (c *ClaudeClient) RunAgentLoop(ctx context.Context, initialPrompt, systemPr
 			return nil, fmt.Errorf("create message at iteration %d: %w", i+1, err)
 		}
 
-		// Add assistant response to history
 		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(response.Content))
 		var toolUses []anthropic.ToolUseBlock
 		var textParts []string
@@ -104,14 +94,13 @@ func (c *ClaudeClient) RunAgentLoop(ctx context.Context, initialPrompt, systemPr
 
 		if len(toolUses) == 0 {
 			slog.Info("Agent loop completed", "iterations", i+1)
-			return &AgentLoopResult{
+			return &models.AgentLoopResult{
 				FinalResponse: strings.Join(textParts, "\n"),
 				Iterations:    i + 1,
 				ToolCalls:     allToolCalls,
 			}, nil
 		}
 
-		// Execute tools and build results
 		toolResults := make([]anthropic.ContentBlockParamUnion, 0, len(toolUses))
 		for _, tu := range toolUses {
 			slog.Debug("Executing tool", "name", tu.Name)
@@ -121,7 +110,7 @@ func (c *ClaudeClient) RunAgentLoop(ctx context.Context, initialPrompt, systemPr
 				inputMap = map[string]any{"raw": string(tu.Input)}
 			}
 
-			allToolCalls = append(allToolCalls, ToolCall{Name: tu.Name, Input: inputMap})
+			allToolCalls = append(allToolCalls, models.ToolCall{Name: tu.Name, Input: inputMap})
 
 			result := executor.ExecuteTool(tu.Name, inputMap)
 			toolResults = append(toolResults, anthropic.NewToolResultBlock(tu.ID, result, false))
@@ -130,7 +119,7 @@ func (c *ClaudeClient) RunAgentLoop(ctx context.Context, initialPrompt, systemPr
 	}
 
 	slog.Warn("Agent loop reached max iterations", "max", maxIterations)
-	return &AgentLoopResult{
+	return &models.AgentLoopResult{
 		FinalResponse: "Max iterations reached",
 		Iterations:    maxIterations,
 		ToolCalls:     allToolCalls,

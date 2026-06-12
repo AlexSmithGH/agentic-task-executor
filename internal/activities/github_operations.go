@@ -10,86 +10,20 @@ import (
 
 	"github.com/google/go-github/v68/github"
 	"go.temporal.io/sdk/activity"
-)
 
-type CIStatus string
-
-const (
-	CIStatusPending CIStatus = "pending"
-	CIStatusSuccess CIStatus = "success"
-	CIStatusFailure CIStatus = "failure"
-	CIStatusError   CIStatus = "error"
-	CIStatusUnknown CIStatus = "unknown"
+	"github.com/alexasmi/agentic-task-executor/internal/models"
 )
 
 type GitHubActivities struct {
 	Client *github.Client
 }
 
-type PRCreateResult struct {
-	PRURL    string `json:"pr_url"`
-	PRNumber int    `json:"pr_number"`
-	HeadSHA  string `json:"head_sha,omitempty"`
-	Success  bool   `json:"success"`
-	Error    string `json:"error,omitempty"`
-}
-
-type PREventType string
-
-const (
-	PREventCIFailure      PREventType = "ci_failure"
-	PREventReviewFeedback PREventType = "review_feedback"
-	PREventMerged         PREventType = "merged"
-	PREventClosed         PREventType = "closed"
-)
-
-type PRWatchInput struct {
-	PRURL              string  `json:"pr_url"`
-	LastKnownCommitSHA string  `json:"last_known_commit_sha"`
+type watcherState struct {
 	LastSeenCommentIDs []int64 `json:"last_seen_comment_ids"`
-	PollInterval       string  `json:"poll_interval,omitempty"`
+	LastKnownCommitSHA string  `json:"last_known_commit_sha"`
 }
 
-type PREvent struct {
-	Type      PREventType `json:"type"`
-	CIDetails string      `json:"ci_details,omitempty"`
-	Comments  []Comment   `json:"comments,omitempty"`
-	PRState   string      `json:"pr_state"`
-}
-
-type CIStatusResult struct {
-	Status  CIStatus `json:"status"`
-	Details string   `json:"details"`
-	Success bool     `json:"success"`
-	Error   string   `json:"error,omitempty"`
-}
-
-type Comment struct {
-	ID        int64  `json:"id"`
-	Author    string `json:"author"`
-	Body      string `json:"body"`
-	Path      string `json:"path,omitempty"`
-	Line      int    `json:"line,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-}
-
-type CommentsResult struct {
-	Comments []Comment `json:"comments"`
-	Success  bool      `json:"success"`
-	Error    string    `json:"error,omitempty"`
-}
-
-type PRCreateInput struct {
-	WorkspacePath   string   `json:"workspace_path"`
-	BranchName      string   `json:"branch_name,omitempty"`
-	CommitMessage   string   `json:"commit_message"`
-	TaskDescription string   `json:"task_description"`
-	FilesModified   []string `json:"files_modified"`
-	Repo            string   `json:"repo,omitempty"`
-	BaseBranch      string   `json:"base_branch,omitempty"`
-}
-
-func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input PRCreateInput) (PRCreateResult, error) {
+func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input models.PRCreateInput) (models.PRCreateResult, error) {
 	repo := input.Repo
 	branch := input.BranchName
 	baseBranch := input.BaseBranch
@@ -105,7 +39,7 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input PRCreate
 
 	owner, repoName, err := parseRepoString(repo)
 	if err != nil {
-		return PRCreateResult{}, err
+		return models.PRCreateResult{}, err
 	}
 
 	pr, _, err := a.Client.PullRequests.Create(ctx, owner, repoName, &github.NewPullRequest{
@@ -115,11 +49,11 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input PRCreate
 		Base:  github.Ptr(baseBranch),
 	})
 	if err != nil {
-		return PRCreateResult{}, fmt.Errorf("creating pull request: %w", err)
+		return models.PRCreateResult{}, fmt.Errorf("creating pull request: %w", err)
 	}
 
 	slog.Info("Pull request created", "number", pr.GetNumber(), "url", pr.GetHTMLURL())
-	return PRCreateResult{
+	return models.PRCreateResult{
 		PRURL:    pr.GetHTMLURL(),
 		PRNumber: pr.GetNumber(),
 		HeadSHA:  pr.GetHead().GetSHA(),
@@ -127,50 +61,44 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input PRCreate
 	}, nil
 }
 
-func (a *GitHubActivities) GetCIStatus(ctx context.Context, prURL string) (CIStatusResult, error) {
+func (a *GitHubActivities) GetCIStatus(ctx context.Context, prURL string) (models.CIStatusResult, error) {
 	slog.Info("Checking CI status", "pr_url", prURL)
 
 	owner, repo, prNumber, err := parsePRURL(prURL)
 	if err != nil {
-		return CIStatusResult{}, err
-	}
-
-	pr, _, err := a.Client.PullRequests.Get(ctx, owner, repo, prNumber)
-	if err != nil {
-		return CIStatusResult{}, fmt.Errorf("getting pull request: %w", err)
+		return models.CIStatusResult{}, err
 	}
 
 	commits, _, err := a.Client.PullRequests.ListCommits(ctx, owner, repo, prNumber, nil)
 	if err != nil {
-		return CIStatusResult{}, fmt.Errorf("listing commits: %w", err)
+		return models.CIStatusResult{}, fmt.Errorf("listing commits: %w", err)
 	}
 
 	if len(commits) == 0 {
-		return CIStatusResult{
-			Status:  CIStatusUnknown,
+		return models.CIStatusResult{
+			Status:  models.CIStatusUnknown,
 			Details: "No commits found in PR",
 			Success: true,
 		}, nil
 	}
 
-	_ = pr
 	latestSHA := commits[len(commits)-1].GetSHA()
 
 	combinedStatus, _, err := a.Client.Repositories.GetCombinedStatus(ctx, owner, repo, latestSHA, nil)
 	if err != nil {
-		return CIStatusResult{}, fmt.Errorf("getting combined status: %w", err)
+		return models.CIStatusResult{}, fmt.Errorf("getting combined status: %w", err)
 	}
 
-	statusMap := map[string]CIStatus{
-		"pending": CIStatusPending,
-		"success": CIStatusSuccess,
-		"failure": CIStatusFailure,
-		"error":   CIStatusError,
+	statusMap := map[string]models.CIStatus{
+		"pending": models.CIStatusPending,
+		"success": models.CIStatusSuccess,
+		"failure": models.CIStatusFailure,
+		"error":   models.CIStatusError,
 	}
 
 	ciStatus, ok := statusMap[combinedStatus.GetState()]
 	if !ok {
-		ciStatus = CIStatusUnknown
+		ciStatus = models.CIStatusUnknown
 	}
 
 	var details []string
@@ -184,30 +112,29 @@ func (a *GitHubActivities) GetCIStatus(ctx context.Context, prURL string) (CISta
 	}
 
 	slog.Info("CI status retrieved", "pr_number", prNumber, "status", ciStatus)
-	return CIStatusResult{
+	return models.CIStatusResult{
 		Status:  ciStatus,
 		Details: detailsStr,
 		Success: true,
 	}, nil
 }
 
-func (a *GitHubActivities) GetReviewComments(ctx context.Context, prURL string) (CommentsResult, error) {
+func (a *GitHubActivities) GetReviewComments(ctx context.Context, prURL string) (models.CommentsResult, error) {
 	slog.Info("Fetching review comments", "pr_url", prURL)
 
 	owner, repo, prNumber, err := parsePRURL(prURL)
 	if err != nil {
-		return CommentsResult{}, err
+		return models.CommentsResult{}, err
 	}
 
-	var comments []Comment
+	var comments []models.Comment
 
-	// Review comments (inline code comments)
 	reviewComments, _, err := a.Client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
 	if err != nil {
-		return CommentsResult{}, fmt.Errorf("listing review comments: %w", err)
+		return models.CommentsResult{}, fmt.Errorf("listing review comments: %w", err)
 	}
 	for _, rc := range reviewComments {
-		c := Comment{
+		c := models.Comment{
 			ID:     rc.GetID(),
 			Author: rc.GetUser().GetLogin(),
 			Body:   rc.GetBody(),
@@ -220,13 +147,12 @@ func (a *GitHubActivities) GetReviewComments(ctx context.Context, prURL string) 
 		comments = append(comments, c)
 	}
 
-	// Issue comments (general PR comments)
 	issueComments, _, err := a.Client.Issues.ListComments(ctx, owner, repo, prNumber, nil)
 	if err != nil {
-		return CommentsResult{}, fmt.Errorf("listing issue comments: %w", err)
+		return models.CommentsResult{}, fmt.Errorf("listing issue comments: %w", err)
 	}
 	for _, ic := range issueComments {
-		c := Comment{
+		c := models.Comment{
 			ID:     ic.GetID(),
 			Author: ic.GetUser().GetLogin(),
 			Body:   ic.GetBody(),
@@ -237,14 +163,13 @@ func (a *GitHubActivities) GetReviewComments(ctx context.Context, prURL string) 
 		comments = append(comments, c)
 	}
 
-	// Reviews
 	reviews, _, err := a.Client.PullRequests.ListReviews(ctx, owner, repo, prNumber, nil)
 	if err != nil {
-		return CommentsResult{}, fmt.Errorf("listing reviews: %w", err)
+		return models.CommentsResult{}, fmt.Errorf("listing reviews: %w", err)
 	}
 	for _, r := range reviews {
 		if r.GetBody() != "" {
-			c := Comment{
+			c := models.Comment{
 				ID:     r.GetID(),
 				Author: r.GetUser().GetLogin(),
 				Body:   fmt.Sprintf("[Review: %s] %s", r.GetState(), r.GetBody()),
@@ -257,21 +182,13 @@ func (a *GitHubActivities) GetReviewComments(ctx context.Context, prURL string) 
 	}
 
 	slog.Info("Comments retrieved", "pr_number", prNumber, "count", len(comments))
-	return CommentsResult{
-		Comments: comments,
-		Success:  true,
-	}, nil
+	return models.CommentsResult{Comments: comments, Success: true}, nil
 }
 
-type watcherState struct {
-	LastSeenCommentIDs []int64 `json:"last_seen_comment_ids"`
-	LastKnownCommitSHA string  `json:"last_known_commit_sha"`
-}
-
-func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PREvent, error) {
+func (a *GitHubActivities) WatchPR(ctx context.Context, input models.PRWatchInput) (models.PREvent, error) {
 	owner, repo, prNumber, err := parsePRURL(input.PRURL)
 	if err != nil {
-		return PREvent{}, err
+		return models.PREvent{}, err
 	}
 
 	pollInterval := 30 * time.Second
@@ -287,7 +204,6 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 		seenIDs[id] = true
 	}
 
-	// Restore state from heartbeat if activity was restarted
 	if activity.HasHeartbeatDetails(ctx) {
 		var saved watcherState
 		if err := activity.GetHeartbeatDetails(ctx, &saved); err == nil {
@@ -307,10 +223,9 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 		})
 
 		if ctx.Err() != nil {
-			return PREvent{}, ctx.Err()
+			return models.PREvent{}, ctx.Err()
 		}
 
-		// Check PR state
 		pr, _, err := a.Client.PullRequests.Get(ctx, owner, repo, prNumber)
 		if err != nil {
 			slog.Warn("Failed to get PR", "error", err)
@@ -319,13 +234,12 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 		}
 
 		if pr.GetMerged() {
-			return PREvent{Type: PREventMerged, PRState: "merged"}, nil
+			return models.PREvent{Type: models.PREventMerged, PRState: "merged"}, nil
 		}
 		if pr.GetState() == "closed" {
-			return PREvent{Type: PREventClosed, PRState: "closed"}, nil
+			return models.PREvent{Type: models.PREventClosed, PRState: "closed"}, nil
 		}
 
-		// Check CI status on our commit
 		if lastCommitSHA != "" {
 			combinedStatus, _, err := a.Client.Repositories.GetCombinedStatus(ctx, owner, repo, lastCommitSHA, nil)
 			if err == nil {
@@ -336,15 +250,14 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 						details = append(details, fmt.Sprintf("%s: %s - %s",
 							s.GetContext(), s.GetState(), s.GetDescription()))
 					}
-					return PREvent{
-						Type:      PREventCIFailure,
+					return models.PREvent{
+						Type:      models.PREventCIFailure,
 						CIDetails: strings.Join(details, "\n"),
 						PRState:   "open",
 					}, nil
 				}
 			}
 
-			// Also check GitHub Actions check runs
 			checkRuns, _, err := a.Client.Checks.ListCheckRunsForRef(ctx, owner, repo, lastCommitSHA, nil)
 			if err == nil && checkRuns != nil {
 				for _, cr := range checkRuns.CheckRuns {
@@ -353,8 +266,8 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 						if cr.Output != nil && cr.Output.Summary != nil {
 							detail += " - " + cr.Output.GetSummary()
 						}
-						return PREvent{
-							Type:      PREventCIFailure,
+						return models.PREvent{
+							Type:      models.PREventCIFailure,
 							CIDetails: detail,
 							PRState:   "open",
 						}, nil
@@ -363,7 +276,6 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 			}
 		}
 
-		// Check for new review comments with CHANGES_REQUESTED
 		reviews, _, err := a.Client.PullRequests.ListReviews(ctx, owner, repo, prNumber, nil)
 		if err == nil {
 			hasChangesRequested := false
@@ -375,13 +287,12 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 			}
 
 			if hasChangesRequested {
-				var newComments []Comment
+				var newComments []models.Comment
 
-				// Inline review comments
 				reviewComments, _, _ := a.Client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
 				for _, rc := range reviewComments {
 					if !seenIDs[rc.GetID()] {
-						c := Comment{
+						c := models.Comment{
 							ID:     rc.GetID(),
 							Author: rc.GetUser().GetLogin(),
 							Body:   rc.GetBody(),
@@ -396,11 +307,10 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 					}
 				}
 
-				// Issue comments
 				issueComments, _, _ := a.Client.Issues.ListComments(ctx, owner, repo, prNumber, nil)
 				for _, ic := range issueComments {
 					if !seenIDs[ic.GetID()] {
-						c := Comment{
+						c := models.Comment{
 							ID:     ic.GetID(),
 							Author: ic.GetUser().GetLogin(),
 							Body:   ic.GetBody(),
@@ -413,10 +323,9 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 					}
 				}
 
-				// Review bodies
 				for _, r := range reviews {
 					if r.GetBody() != "" && !seenIDs[r.GetID()] {
-						c := Comment{
+						c := models.Comment{
 							ID:     r.GetID(),
 							Author: r.GetUser().GetLogin(),
 							Body:   fmt.Sprintf("[Review: %s] %s", r.GetState(), r.GetBody()),
@@ -430,8 +339,8 @@ func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PRE
 				}
 
 				if len(newComments) > 0 {
-					return PREvent{
-						Type:     PREventReviewFeedback,
+					return models.PREvent{
+						Type:     models.PREventReviewFeedback,
 						Comments: newComments,
 						PRState:  "open",
 					}, nil

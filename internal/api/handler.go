@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/alexasmi/agentic-task-executor/internal/config"
+	"github.com/alexasmi/agentic-task-executor/internal/models"
 	"github.com/alexasmi/agentic-task-executor/internal/workflows"
 )
 
@@ -53,7 +54,7 @@ func (h *Handler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 
 	workflowID := "task-" + uuid.New().String()
 
-	workflowInput := workflows.WorkflowInput{
+	workflowInput := models.WorkflowInput{
 		RepoURL:         params.RepoURL,
 		TaskDescription: params.TaskDescription,
 		Checklist:       params.Checklist,
@@ -121,7 +122,7 @@ func (h *Handler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 
 	if execInfo.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_COMPLETED {
 		handle := h.temporalClient.GetWorkflow(r.Context(), workflowID, "")
-		var result workflows.WorkflowResult
+		var result models.WorkflowResult
 		if err := handle.Get(r.Context(), &result); err == nil {
 			resp.Result = map[string]any{
 				"success": result.Success,
