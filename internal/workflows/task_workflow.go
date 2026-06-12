@@ -195,7 +195,11 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		}, nil
 	}
 	workspacePath = cloneResult.WorkspacePath
-	logger.Info("Repository cloned", "path", workspacePath)
+	defaultBranch := cloneResult.DefaultBranch
+	if defaultBranch == "" {
+		defaultBranch = "master"
+	}
+	logger.Info("Repository cloned", "path", workspacePath, "default_branch", defaultBranch)
 
 	// Step 2: Create branch
 	branchName := input.BranchName
@@ -299,6 +303,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			TaskDescription: input.TaskDescription,
 			FilesModified:   agentResult.FilesModified,
 			Repo:            extractRepoSlug(input.RepoURL),
+			BaseBranch:      defaultBranch,
 		},
 	).Get(ctx, &prResult)
 	if err != nil {

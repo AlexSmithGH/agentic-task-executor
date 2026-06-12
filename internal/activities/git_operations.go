@@ -19,6 +19,7 @@ type GitActivities struct {
 
 type CloneResult struct {
 	WorkspacePath string `json:"workspace_path"`
+	DefaultBranch string `json:"default_branch,omitempty"`
 	Success       bool   `json:"success"`
 	Error         string `json:"error,omitempty"`
 }
@@ -58,16 +59,23 @@ func (a *GitActivities) CloneRepository(ctx context.Context, repoURL, workspaceD
 		}
 	}
 
-	_, err := git.PlainCloneContext(ctx, workspaceDir, false, cloneOpts)
+	repo, err := git.PlainCloneContext(ctx, workspaceDir, false, cloneOpts)
 	if err != nil {
 		return CloneResult{}, fmt.Errorf("cloning repository: %w", err)
 	}
 
 	absPath, _ := filepath.Abs(workspaceDir)
-	slog.Info("Repository cloned", "path", absPath)
+
+	defaultBranch := "master"
+	if head, err := repo.Head(); err == nil {
+		defaultBranch = head.Name().Short()
+	}
+
+	slog.Info("Repository cloned", "path", absPath, "default_branch", defaultBranch)
 
 	return CloneResult{
 		WorkspacePath: absPath,
+		DefaultBranch: defaultBranch,
 		Success:       true,
 	}, nil
 }
