@@ -1,13 +1,13 @@
 # Getting Started with Agentic Task Executor
 
-This guide will walk you through setting up and running your first agentic task.
+This guide walks you through setting up and running your first agentic task.
 
 ## Prerequisites
 
-- Python 3.11 or higher
+- Go 1.23 or higher
 - Docker and Docker Compose
 - GitHub personal access token
-- Anthropic API key (Claude)
+- Google Cloud credentials (for Vertex AI / Claude)
 
 ## Installation
 
@@ -17,41 +17,35 @@ This guide will walk you through setting up and running your first agentic task.
 cd agentic-task-executor
 ```
 
-### 2. Create Virtual Environment
-
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-### 3. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure Environment
+### 2. Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and add your credentials:
+Edit `.env` and set your credentials:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-api03-...
+GCP_PROJECT_ID=your-gcp-project
+GCP_REGION=us-east5
 GITHUB_TOKEN=ghp_...
 ```
 
-### 5. Start Temporal Server
+### 3. Start Temporal Server
 
 ```bash
-docker-compose up -d
+make docker-up
 ```
 
 Verify it's running:
 - Temporal UI: http://localhost:8080
 - PostgreSQL: localhost:5432
+
+### 4. Build
+
+```bash
+make build
+```
 
 ## Running the Service
 
@@ -60,39 +54,25 @@ You need to run two processes:
 ### Terminal 1: Start the Worker
 
 ```bash
-python -m src.worker
+make run-worker
 ```
 
 You should see:
 ```
-Starting Temporal worker...
-Connected to Temporal at localhost:7233
-Loaded workflows: AgenticTaskWorkflow
-Loaded activities: clone_repository, create_branch, ...
-Worker started successfully. Press Ctrl+C to stop.
+INFO Starting Temporal worker host=localhost:7233 namespace=default task_queue=agentic-tasks
+INFO Worker configured workflows=["AgenticTaskWorkflow"] task_queue=agentic-tasks
 ```
 
 ### Terminal 2: Start the API Server
 
 ```bash
-uvicorn src.api:app --reload
+make run-api
 ```
 
 You should see:
 ```
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process
-```
-
-### Alternative: Use Make
-
-```bash
-# Start Temporal
-make docker-up
-
-# In separate terminals:
-make run-worker
-make run-api
+INFO Connecting to Temporal host=localhost:7233 namespace=default
+INFO API server starting addr=0.0.0.0:8000
 ```
 
 ## Your First Task
@@ -100,7 +80,7 @@ make run-api
 ### 1. Check API Health
 
 ```bash
-curl http://localhost:8000/health
+curl -s http://localhost:8000/health | jq .
 ```
 
 Expected response:
@@ -111,7 +91,7 @@ Expected response:
 ### 2. Execute a Repository Audit Task
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/execute-task \
+curl -s -X POST http://localhost:8000/api/v1/execute-task \
   -H "Content-Type: application/json" \
   -d '{
     "repo_url": "https://github.com/openshift/managed-cluster-validating-webhooks",
@@ -127,14 +107,14 @@ curl -X POST http://localhost:8000/api/v1/execute-task \
       "repo_type": "operator",
       "language": "go"
     }
-  }'
+  }' | jq .
 ```
 
 Expected response:
 ```json
 {
-  "workflow_id": "audit-task-abc123",
-  "run_id": "xyz789",
+  "workflow_id": "task-abc123...",
+  "run_id": "xyz789...",
   "status": "running"
 }
 ```
@@ -144,39 +124,29 @@ Expected response:
 Using the `workflow_id` from the response:
 
 ```bash
-curl http://localhost:8000/api/v1/task/audit-task-abc123/status
+curl -s http://localhost:8000/api/v1/task/task-abc123.../status | jq .
 ```
 
 Response while running:
 ```json
 {
-  "workflow_id": "audit-task-abc123",
-  "run_id": "xyz789",
-  "status": "running",
-  "result": null,
-  "error": null
+  "workflow_id": "task-abc123...",
+  "run_id": "xyz789...",
+  "status": "running"
 }
 ```
 
 Response when complete:
 ```json
 {
-  "workflow_id": "audit-task-abc123",
-  "run_id": "xyz789",
+  "workflow_id": "task-abc123...",
+  "run_id": "xyz789...",
   "status": "completed",
   "result": {
     "success": true,
     "summary": "Repository audit completed",
-    "details": {
-      "golangci_yml": "present",
-      "pre_commit_config": "present with required hooks",
-      "makefile_test": "present",
-      "agent_docs": "claude.md found",
-      "claude_settings": "not found"
-    },
-    "pr_url": null
-  },
-  "error": null
+    "details": { ... }
+  }
 }
 ```
 
@@ -187,36 +157,34 @@ Response when complete:
 3. Find your workflow by ID
 4. Click to see detailed execution history
 
-## Common Tasks
+## Common Operations
 
 ### Check Running Workflows
 
 ```bash
-curl http://localhost:8000/api/v1/tasks
+curl -s http://localhost:8000/api/v1/tasks | jq .
 ```
 
 ### Cancel a Running Task
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/task/{workflow_id}/cancel
+curl -s -X POST http://localhost:8000/api/v1/task/{workflow_id}/cancel | jq .
 ```
 
 ### Send Signal to Workflow
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/task/{workflow_id}/signal \
+curl -s -X POST http://localhost:8000/api/v1/task/{workflow_id}/signal \
   -H "Content-Type: application/json" \
   -d '{
     "signal_name": "ci_completed",
     "signal_args": {"status": "passed"}
-  }'
+  }' | jq .
 ```
 
 ## Example Use Cases
 
 ### 1. Repository Audit (ROSAENG-59414)
-
-Audit a repository for agentic SDLC readiness:
 
 ```json
 {
@@ -234,8 +202,6 @@ Audit a repository for agentic SDLC readiness:
 
 ### 2. Automated Boilerplate Update (ROSAENG-59415)
 
-Create a PR to update boilerplate:
-
 ```json
 {
   "repo_url": "https://github.com/your-org/your-operator",
@@ -250,8 +216,6 @@ Create a PR to update boilerplate:
 ```
 
 ### 3. CI Failure Analysis
-
-Analyze and fix CI failures:
 
 ```json
 {
@@ -268,7 +232,7 @@ Analyze and fix CI failures:
 
 ### Worker Not Starting
 
-**Error:** `Failed to connect to Temporal server`
+**Error:** `Failed to connect to Temporal`
 
 **Solution:**
 1. Check Temporal is running: `docker-compose ps`
@@ -277,17 +241,14 @@ Analyze and fix CI failures:
 
 ### API Returns 503
 
-**Error:** `{"detail": "Temporal client not available"}`
-
 **Solution:**
-1. Ensure worker is running
-2. Check Temporal server status
-3. Verify `TEMPORAL_HOST` in `.env`
+1. Ensure Temporal server is running
+2. Verify `TEMPORAL_HOST` in `.env`
 
 ### Task Stays in "Running" State
 
 **Possible causes:**
-1. Worker crashed - check worker logs
+1. Worker crashed - check worker terminal
 2. Activity timeout - check Temporal UI for details
 3. Claude API rate limit - wait and retry
 
@@ -295,38 +256,26 @@ Analyze and fix CI failures:
 1. Check worker terminal for errors
 2. Open Temporal UI and find the workflow
 3. Look at activity execution history
-4. Check for error messages
 
 ### GitHub Authentication Errors
-
-**Error:** `Bad credentials` or `401 Unauthorized`
 
 **Solution:**
 1. Verify `GITHUB_TOKEN` in `.env`
 2. Ensure token has `repo` scope
 3. Test token: `curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user`
 
-### Claude API Errors
-
-**Error:** `401 Authentication Error`
+### Claude / Vertex AI Errors
 
 **Solution:**
-1. Verify `ANTHROPIC_API_KEY` in `.env`
-2. Check API key is valid at https://console.anthropic.com
-3. Ensure sufficient API credits
-
-## Next Steps
-
-1. **Implement Agent Runtime** - Complete Claude SDK integration in `src/agent/`
-2. **Add Tests** - Write tests for workflows and activities
-3. **Customize Prompts** - Adjust system prompts for your use cases
-4. **Add More Tools** - Extend agent capabilities with custom tools
-5. **Deploy** - See DEPLOYMENT.md for production setup
+1. Verify `GCP_PROJECT_ID` and `GCP_REGION` in `.env`
+2. Authenticate: `gcloud auth application-default login`
+3. Ensure Vertex AI API is enabled in your GCP project
 
 ## Resources
 
-- [Temporal Python SDK Docs](https://docs.temporal.io/dev-guide/python)
-- [Anthropic API Docs](https://docs.anthropic.com)
-- [FastAPI Docs](https://fastapi.tiangolo.com)
+- [Temporal Go SDK Docs](https://docs.temporal.io/dev-guide/go)
+- [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)
+- [Chi Router](https://github.com/go-chi/chi)
+- [go-git](https://github.com/go-git/go-git)
 - [ROSAENG-59415](https://redhat.atlassian.net/browse/ROSAENG-59415)
 - [ROSAENG-59414](https://redhat.atlassian.net/browse/ROSAENG-59414)

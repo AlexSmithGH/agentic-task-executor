@@ -4,16 +4,16 @@ AI-powered task execution service for repository automation and analysis.
 
 ## Overview
 
-This service provides an API for executing AI-assisted tasks against GitHub repositories using Claude and Temporal for workflow orchestration.
+This service provides an API for executing AI-assisted tasks against GitHub repositories using Claude (via Vertex AI) and Temporal for workflow orchestration.
 
 **Built for:** ROSAENG-59415 (SRE Automation Pattern - AI-Assisted Operational Workflows)
 
 ## Architecture
 
-- **API Layer:** FastAPI REST API
+- **API Layer:** Go HTTP server (Chi router)
 - **Orchestration:** Temporal workflows for long-running, durable execution
-- **Agent Runtime:** Claude SDK with custom tool definitions
-- **State Management:** Temporal server
+- **Agent Runtime:** Anthropic Go SDK with custom tool definitions
+- **State Management:** Temporal server with PostgreSQL
 
 ## Features
 
@@ -34,7 +34,7 @@ This service provides an API for executing AI-assisted tasks against GitHub repo
 
 ### Prerequisites
 
-- Python 3.11+
+- Go 1.23+
 - Docker and Docker Compose (for Temporal server)
 - GitHub access token
 - Google Cloud credentials (for Vertex AI)
@@ -46,30 +46,25 @@ This service provides an API for executing AI-assisted tasks against GitHub repo
    docker-compose up -d
    ```
 
-2. **Install dependencies:**
+2. **Configure environment:**
    ```bash
-   pip install -r requirements.txt
+   cp .env.example .env
+   # Edit .env with your credentials
    ```
 
-3. **Set environment variables:**
+3. **Start the Temporal worker:**
    ```bash
-   export ANTHROPIC_API_KEY=your_key_here
-   export GITHUB_TOKEN=your_token_here
+   make run-worker
    ```
 
-4. **Start the Temporal worker:**
+4. **Start the API server (separate terminal):**
    ```bash
-   python -m src.worker
+   make run-api
    ```
 
-5. **Start the API server:**
-   ```bash
-   uvicorn src.api:app --reload
-   ```
-
-6. **Access services:**
+5. **Access services:**
    - API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
+   - Health: http://localhost:8000/health
    - Temporal UI: http://localhost:8080
 
 ## API Usage
@@ -77,7 +72,7 @@ This service provides an API for executing AI-assisted tasks against GitHub repo
 ### Execute a Task
 
 ```bash
-curl -X POST http://localhost:8000/execute-task \
+curl -s -X POST http://localhost:8000/api/v1/execute-task \
   -H "Content-Type: application/json" \
   -d '{
     "repo_url": "https://github.com/openshift/managed-cluster-validating-webhooks",
@@ -93,56 +88,57 @@ curl -X POST http://localhost:8000/execute-task \
       "repo_type": "operator",
       "language": "go"
     }
-  }'
+  }' | jq .
 ```
 
 ### Check Task Status
 
 ```bash
-curl http://localhost:8000/task/{workflow_id}/status
+curl -s http://localhost:8000/api/v1/task/{workflow_id}/status | jq .
 ```
 
 ## Project Structure
 
 ```
 agentic-task-executor/
-├── src/
-│   ├── api/                    # FastAPI application
-│   │   ├── __init__.py
-│   │   ├── routes.py          # API endpoints
-│   │   └── models.py          # Request/response models
-│   ├── workflows/             # Temporal workflows
-│   │   ├── __init__.py
-│   │   └── task_workflow.py  # Main workflow definitions
-│   ├── activities/            # Temporal activities
-│   │   ├── __init__.py
-│   │   ├── git_operations.py # Clone, branch, commit, push
-│   │   ├── agent_runtime.py  # Claude SDK integration
-│   │   └── github_operations.py # PR creation, status checks
-│   ├── agent/                 # Agent runtime components
-│   │   ├── __init__.py
-│   │   ├── claude_client.py  # Claude SDK wrapper
-│   │   ├── tools.py          # Tool definitions for Claude
-│   │   └── prompts.py        # System prompts and templates
-│   ├── worker.py             # Temporal worker process
-│   └── config.py             # Configuration management
-├── tests/
-│   ├── test_workflows.py
-│   ├── test_activities.py
-│   └── test_agent.py
-├── docker-compose.yml        # Temporal server setup
-├── Dockerfile               # Container image for deployment
-├── requirements.txt
-├── pyproject.toml
-└── README.md
+├── cmd/
+│   ├── api/main.go              # API server entrypoint
+│   └── worker/main.go           # Temporal worker entrypoint
+├── internal/
+│   ├── config/config.go         # Configuration (env loading)
+│   ├── api/                     # HTTP handlers and router
+│   │   ├── handler.go           # Route handlers
+│   │   ├── models.go            # Request/response structs
+│   │   └── server.go            # Server setup and middleware
+│   ├── workflows/
+│   │   └── task_workflow.go     # Temporal workflow definition
+│   ├── activities/              # Temporal activity implementations
+│   │   ├── git_operations.go    # Clone, branch, commit, push
+│   │   ├── agent_runtime.go     # Claude agent reasoning loop
+│   │   └── github_operations.go # PR creation, CI status
+│   └── agent/                   # Claude AI integration
+│       ├── client.go            # Anthropic SDK wrapper (Vertex AI)
+│       ├── tools.go             # Tool definitions for Claude
+│       └── prompts.go           # System prompt templates
+├── docker-compose.yml           # Temporal server setup
+├── Dockerfile                   # Multi-stage container build
+├── Makefile                     # Build and dev commands
+├── go.mod / go.sum
+└── .env.example
 ```
 
 ## Development
 
+### Building
+
+```bash
+make build
+```
+
 ### Running Tests
 
 ```bash
-pytest tests/
+make test
 ```
 
 ### Temporal UI
@@ -153,12 +149,9 @@ Monitor running workflows at http://localhost:8080
 
 Temporal provides time-travel debugging - you can replay workflows with the exact same inputs and state.
 
-## Deployment
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for production deployment instructions.
-
 ## References
 
 - [ROSAENG-59415](https://redhat.atlassian.net/browse/ROSAENG-59415) - SRE Automation Pattern
 - [ROSAENG-59414](https://redhat.atlassian.net/browse/ROSAENG-59414) - Quality Gates Tooling
-- [Agentic SDLC Best Practices](https://gitlab.cee.redhat.com/global-engineering/wg-agentic-sdlc/-/blob/main/best-practices/repo-scaffolding/README.md)
+- [Temporal Go SDK Docs](https://docs.temporal.io/dev-guide/go)
+- [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)

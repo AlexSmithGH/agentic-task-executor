@@ -10,7 +10,7 @@ This service provides a general-purpose agentic task execution platform for repo
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ API Layer (FastAPI)                             │
+│ API Layer (Go / Chi)                           │
 │ - REST endpoints for task execution             │
 │ - Status queries and workflow control           │
 │ - Signal handling for external events           │
@@ -29,7 +29,7 @@ This service provides a general-purpose agentic task execution platform for repo
 ┌─────────────────────────────────────────────────┐
 │ Activities Layer                                │
 │ ├─ Git Operations (clone, branch, commit, push)│
-│ ├─ Agent Runtime (Claude SDK reasoning loop)   │
+│ ├─ Agent Runtime (Claude reasoning loop)       │
 │ └─ GitHub Operations (PRs, CI status, reviews) │
 └─────────────────────────────────────────────────┘
                      │
@@ -44,144 +44,116 @@ This service provides a general-purpose agentic task execution platform for repo
 
 ## Component Details
 
-### API Layer (FastAPI)
+### API Layer (`internal/api/`)
+
+Built with [Chi](https://github.com/go-chi/chi) router with CORS middleware. The `Handler` struct holds a Temporal client and config, connecting eagerly at startup (fail-fast).
 
 **Endpoints:**
 - `POST /api/v1/execute-task` - Start a new agentic task
-- `GET /api/v1/task/{workflow_id}/status` - Query task status
-- `POST /api/v1/task/{workflow_id}/signal` - Send signals to running tasks
-- `POST /api/v1/task/{workflow_id}/cancel` - Cancel a running task
+- `GET /api/v1/task/{workflowID}/status` - Query task status
+- `POST /api/v1/task/{workflowID}/signal` - Send signals to running tasks
+- `POST /api/v1/task/{workflowID}/cancel` - Cancel a running task
 - `GET /api/v1/tasks` - List recent tasks
+- `GET /health` - Health check
+- `GET /` - Service info
 
-**Models:**
-- `TaskParams` - Input parameters for task execution
-- `TaskResponse` - Initial response with workflow tracking info
-- `TaskStatus` - Current status of a workflow
-- `TaskResult` - Final results from completed tasks
+**Key files:**
+- `handler.go` - Route handler methods
+- `models.go` - Request/response structs (`TaskParams`, `TaskResponse`, `TaskStatus`)
+- `server.go` - Router setup, CORS, middleware
 
 ### Orchestration Layer (Temporal)
 
-**Workflows:**
-- `AgenticTaskWorkflow` - Main workflow orchestrating the full task lifecycle
+**Workflow:** `AgenticTaskWorkflow` (`internal/workflows/task_workflow.go`)
+
+Go's Temporal SDK uses function-based workflows (not class-based like Python). State is held in local variables within the workflow function scope.
 
 **Workflow Steps:**
 1. Clone repository to workspace
 2. Execute agent reasoning loop
 3. Create pull request (if changes made)
 4. Wait for CI results (optional)
-5. Handle failures and iterate
 
 **Features:**
-- Durable execution (survives service restarts)
-- Long waits (hours/days for CI, code review)
-- Signal handlers (external events like webhooks)
-- Query handlers (status checks)
-- Automatic retries with backoff
+- Query handler via `workflow.SetQueryHandler` for status checks
+- Signal channel via `workflow.GetSignalChannel` for cancellation
+- Per-activity retry policies and timeouts
+- Activity options: `StartToCloseTimeout`, `HeartbeatTimeout`, `RetryPolicy`
 
-### Activities Layer
+**Input/Output types:** `WorkflowInput`, `WorkflowResult`, `CloneResult`, `AgentResult`, `PRResult`
 
-**Git Operations (`git_operations.py`):**
-- `clone_repository` - Clone GitHub repos to workspace
-- `create_branch` - Create and checkout new branches
-- `commit_changes` - Stage and commit all changes
-- `push_changes` - Push commits to remote
+### Activities Layer (`internal/activities/`)
 
-**Agent Runtime (`agent_runtime.py`):**
-- `agent_reasoning_step` - Execute Claude reasoning loop with tools
-- Tool execution (read files, run commands, search code)
-- Returns structured results with actions taken
+Activities use **struct-based registration** for dependency injection. Each struct holds its dependencies (config, GitHub client, tokens) and all exported methods become Temporal activities.
 
-**GitHub Operations (`github_operations.py`):**
-- `create_pull_request` - Create PRs on GitHub
-- `get_ci_status` - Check CI/CD pipeline status
-- `get_review_comments` - Fetch PR review comments
+**Git Operations (`git_operations.go`) — `GitActivities` struct:**
+- `CloneRepository` - Clone repos using go-git with HTTP token auth
+- `CreateBranch` - Create and checkout new branches
+- `CommitChanges` - Stage and commit all changes
+- `PushChanges` - Push commits to remote
 
-### Agent Runtime Layer
+**Agent Runtime (`agent_runtime.go`) — `AgentActivities` struct:**
+- `AgentReasoningStep` - Execute Claude reasoning loop with tools
+- `ToolExecutor` - Workspace-sandboxed tool execution (read files, run commands, grep)
 
-**Claude Client (`claude_client.py`):**
-- Multi-turn reasoning loops with conversation state
-- Tool use integration
-- Streaming support for long outputs
+**GitHub Operations (`github_operations.go`) — `GitHubActivities` struct:**
+- `CreatePullRequest` - Create PRs via go-github
+- `GetCIStatus` - Check CI/CD pipeline status (combined commit status)
+- `GetReviewComments` - Fetch inline, issue, and review comments
 
-**Tools (`tools.py`):**
-- `read_file` - Read file contents
+### Agent Runtime Layer (`internal/agent/`)
+
+**Claude Client (`client.go`):**
+- Uses `anthropic-sdk-go` with `vertex.WithGoogleAuth` for Vertex AI
+- `CreateMessage` - Single message with optional system prompt and tools
+- `RunAgentLoop` - Multi-turn reasoning loop: send messages → check for tool_use blocks → execute tools → append results → repeat until no more tool calls or max iterations
+
+**Tools (`tools.go`):**
+- `read_file` - Read file contents (workspace-sandboxed)
 - `list_files` - List directory contents
-- `run_command` - Execute shell commands
-- `search_code` - Search for code patterns
+- `execute_command` - Execute bash commands (30s timeout)
+- `search_files` - grep-based pattern search
 
-**Prompts (`prompts.py`):**
-- `AUDIT_REPOSITORY_PROMPT` - Repository analysis tasks
-- `CREATE_PR_PROMPT` - PR creation tasks
-- `ANALYZE_CI_FAILURE_PROMPT` - CI failure debugging
+**Prompts (`prompts.go`):**
+- `AuditRepositoryPrompt` - Repository analysis tasks
+- `CreatePRPrompt` - PR creation tasks
+- `AnalyzeCIFailurePrompt` - CI failure debugging
+- `BuildAgentSystemPrompt` / `BuildInitialPrompt` - Dynamic prompt construction
 
 ## Data Flow
 
 ### Typical Task Execution Flow
 
-1. **API Request**
-   ```
-   POST /execute-task
-   {
-     "repo_url": "https://github.com/org/repo",
-     "task_description": "Audit for agentic SDLC readiness",
-     "checklist": ["Check .golangci.yml", "Check Makefile"],
-     "context": {"repo_type": "operator"}
-   }
-   ```
-
-2. **Workflow Initialization**
-   - Temporal workflow started with unique ID
-   - Workflow parameters stored in Temporal
-
-3. **Repository Clone**
-   - Activity: `clone_repository`
-   - Creates workspace directory
-   - Clones repo to local filesystem
-
-4. **Agent Reasoning**
-   - Activity: `agent_reasoning_step`
-   - Claude analyzes repository structure
-   - Uses tools to read files, run commands
-   - Generates findings and recommendations
-
-5. **PR Creation (if changes made)**
-   - Activity: `create_pull_request`
-   - Creates GitHub PR with changes
-   - Returns PR URL for tracking
-
-6. **CI Monitoring (optional)**
-   - Workflow waits for CI signal
-   - Activity: `get_ci_status`
-   - If failed, agent analyzes and fixes
-
-7. **Result Return**
-   - Workflow completes with TaskResult
-   - API returns structured response
+1. **API Request** → `POST /api/v1/execute-task` with repo URL, description, checklist
+2. **Workflow Start** → Temporal workflow created with unique ID (`task-{uuid}`)
+3. **Clone** → `CloneRepository` activity clones repo to `/tmp/agentic-workspaces/{workflow_id}`
+4. **Agent Reasoning** → `AgentReasoningStep` runs Claude with tools against the workspace
+5. **PR Creation** → If agent made changes, `CreatePullRequest` creates a GitHub PR
+6. **CI Wait** → Optionally polls for CI completion
+7. **Result** → Workflow completes with `WorkflowResult` queryable via status endpoint
 
 ## State Management
 
 ### Temporal State Persistence
-
 - **Workflow State**: Persisted in PostgreSQL by Temporal
 - **Activity Results**: Stored in workflow history
 - **Signals**: Queued in Temporal and delivered to workflows
 - **Workspace Files**: Ephemeral, cleaned up after completion
 
-### Conversation State
-
-- **Agent Reasoning**: Maintained in memory during workflow execution
-- **Tool Results**: Passed between Claude turns
-- **Context**: Preserved across agent iterations
+### Agent Conversation State
+- Maintained in memory during the `AgentReasoningStep` activity
+- Full message history passed to each Claude API call
+- Tool results appended as user messages between turns
 
 ## Deployment Architecture
 
 ### Local Development
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   FastAPI   │────▶│  Temporal   │────▶│  Worker     │
-│   (Port     │     │  Server     │     │  Process    │
-│    8000)    │     │ (Docker)    │     │             │
-└─────────────┘     └─────────────┘     └─────────────┘
+│  API Server │────▶│  Temporal   │────▶│  Worker     │
+│  (Go, :8000)│     │  Server     │     │  (Go)       │
+└─────────────┘     │  (Docker)   │     └─────────────┘
+                    └─────────────┘
                             │
                             ▼
                     ┌─────────────┐
@@ -193,82 +165,61 @@ This service provides a general-purpose agentic task execution platform for repo
 ### Production (Future)
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  API (ECS/  │────▶│  Temporal   │────▶│  Workers    │
-│  K8s)       │     │  Cloud      │     │  (ECS/K8s)  │
+│  API (K8s)  │────▶│  Temporal   │────▶│  Workers    │
+│             │     │  Cloud      │     │  (K8s)      │
 └─────────────┘     └─────────────┘     └─────────────┘
-      │                                        │
-      ▼                                        ▼
-┌─────────────┐                        ┌─────────────┐
-│  CloudWatch │                        │  Ephemeral  │
-│  Logs       │                        │  Workspaces │
-└─────────────┘                        └─────────────┘
 ```
 
 ## Design Decisions
 
 ### Why Temporal?
-
 1. **Long-running workflows** - PR workflows can wait hours/days for CI and reviews
 2. **Durability** - Service restarts don't lose workflow state
 3. **External events** - Built-in signal handling for webhooks
 4. **Observability** - Temporal UI shows workflow execution history
-5. **Retry logic** - Automatic retries for transient failures
+5. **Go SDK** - Temporal's original and most mature SDK
 
-### Why NOT Bedrock Agents?
+### Why Go?
+1. **Temporal's native language** - Most mature SDK, best documentation
+2. **Single binary deployment** - No runtime dependencies
+3. **Strong typing** - Compile-time safety for activity/workflow contracts
+4. **Concurrency** - Natural fit for I/O-bound orchestration work
 
-1. **POC simplicity** - Direct Claude SDK gives more control
-2. **Debugging** - Easier to iterate on prompts and tools
-3. **Flexibility** - Can migrate to Bedrock later if needed
-4. **Cost** - Bedrock Agents add overhead for simple tasks
-
-### Why Claude SDK Direct?
-
-1. **Full control** - Complete visibility into reasoning process
-2. **Tool customization** - Define exactly the tools needed
-3. **Extended thinking** - Access to Claude's advanced reasoning modes
-4. **Streaming** - Real-time output for long-running tasks
+### Why Claude via Vertex AI?
+1. **GCP integration** - Uses Application Default Credentials
+2. **Enterprise compliance** - Data stays within GCP
+3. **Official SDK** - `anthropic-sdk-go` with `vertex.WithGoogleAuth`
 
 ## Security Considerations
 
 ### Credentials Management
-- GitHub tokens stored in environment variables
-- Anthropic API keys in environment variables
-- Temporal uses mTLS for production deployments
+- GitHub token and GCP credentials loaded from environment variables
+- `.env` file excluded from git via `.gitignore`
 
 ### Workspace Isolation
-- Each task gets isolated workspace directory
-- Workspaces cleaned up after completion
-- Commands restricted to workspace root
+- Each task gets isolated workspace directory under `/tmp/agentic-workspaces/`
+- File operations validated to stay within workspace via `filepath.Abs` + `strings.HasPrefix`
+- Command execution sandboxed to workspace directory with 30s timeout
 
-### Tool Safety
-- File operations restricted to workspace
-- Command execution sandboxed
-- GitHub operations require proper authentication
+## Dependencies
 
-## Observability
-
-### Logging
-- Structured logging with context throughout
-- Activity-level logging in Temporal
-- API request/response logging
-
-### Monitoring
-- Temporal UI for workflow visualization
-- FastAPI metrics endpoint
-- Worker health checks
-
-### Debugging
-- Temporal time-travel debugging
-- Full conversation history in logs
-- Tool execution traces
+| Concern | Go Module |
+|---------|-----------|
+| HTTP router | `github.com/go-chi/chi/v5` |
+| Temporal SDK | `go.temporal.io/sdk` |
+| Claude API | `github.com/anthropics/anthropic-sdk-go` |
+| GitHub API | `github.com/google/go-github/v68` |
+| Git operations | `github.com/go-git/go-git/v5` |
+| Config | `github.com/caarlos0/env/v11` + `github.com/joho/godotenv` |
+| Logging | `log/slog` (stdlib) |
 
 ## Future Enhancements
 
 ### Near-term
-1. Implement full Claude SDK integration in agent runtime
-2. Add webhook receiver for GitHub CI events
-3. Implement human-in-the-loop approval steps
-4. Add metrics dashboard integration
+1. Add webhook receiver for GitHub CI events
+2. Implement human-in-the-loop approval steps
+3. Add comprehensive test suite
+4. Production Kubernetes manifests
 
 ### Long-term
 1. Multi-agent workflows (parallel analysis)

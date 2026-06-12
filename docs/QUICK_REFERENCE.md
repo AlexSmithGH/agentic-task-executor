@@ -1,35 +1,32 @@
 # Agentic Task Executor - Quick Reference
 
-## 🚀 Starting the System
+## Starting the System
 
 ### 1. Start Infrastructure (Docker)
 ```bash
-cd ~/git/alexasmi/agentic-task-executor
-docker-compose up -d
+make docker-up
 ```
 
 This starts:
-- ✅ PostgreSQL (port 5432)
-- ✅ Temporal Server (port 7233)
-- ✅ Temporal UI (port 8080) - **http://localhost:8080**
+- PostgreSQL (port 5432)
+- Temporal Server (port 7233)
+- Temporal UI (port 8080) — http://localhost:8080
 
 ### 2. Start Worker (Terminal 1)
 ```bash
-source venv/bin/activate
-python -m src.worker
+make run-worker
 ```
 
 ### 3. Start API (Terminal 2)
 ```bash
-source venv/bin/activate
-uvicorn src.api:app --reload
+make run-api
 ```
 
-## 📡 Using the System
+## Using the System
 
 ### Send a Task
 ```bash
-curl -X POST http://localhost:8000/api/v1/execute-task \
+curl -s -X POST http://localhost:8000/api/v1/execute-task \
   -H "Content-Type: application/json" \
   -d '{
     "repo_url": "https://github.com/openshift/managed-cluster-validating-webhooks",
@@ -39,7 +36,7 @@ curl -X POST http://localhost:8000/api/v1/execute-task \
       "Check for .pre-commit-config.yaml",
       "Check for Makefile with test target"
     ]
-  }'
+  }' | jq .
 ```
 
 Returns:
@@ -53,21 +50,17 @@ Returns:
 
 ### Check Task Status
 ```bash
-curl http://localhost:8000/api/v1/task/<workflow_id>/status | jq
+curl -s http://localhost:8000/api/v1/task/<workflow_id>/status | jq .
 ```
 
 ### Monitor via Temporal UI
-Open in browser: **http://localhost:8080**
+Open in browser: http://localhost:8080
 
-- Click "Workflows" to see all executions
-- Click a workflow ID to see detailed execution history
-- View activity timeline, inputs, outputs, and errors
-
-## 🔍 Monitoring
+## Monitoring
 
 ### API Health
 ```bash
-curl http://localhost:8000/health
+curl -s http://localhost:8000/health | jq .
 ```
 
 ### Worker Logs
@@ -80,17 +73,17 @@ docker-compose ps
 
 ### View Temporal Logs
 ```bash
-docker logs agentic-task-executor-temporal-1
+docker-compose logs -f temporal
 ```
 
-## 🛑 Stopping the System
+## Stopping the System
 
 ### Stop Worker/API
 Press `Ctrl+C` in each terminal
 
 ### Stop Infrastructure
 ```bash
-docker-compose down
+make docker-down
 ```
 
 ### Stop Everything (including volumes)
@@ -98,94 +91,54 @@ docker-compose down
 docker-compose down -v
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Worker won't start
 - Check if Temporal is running: `docker-compose ps`
-- Check connectivity: `curl http://localhost:7233`
 - Restart Temporal: `docker-compose restart temporal`
 
-### API returns 503
-- Ensure worker is running
-- Check Temporal server: `docker-compose logs temporal`
+### API returns errors
+- Ensure Temporal server is running
+- Check worker is running and registered
 
 ### Task fails immediately
 - Check worker logs for errors
 - View in Temporal UI: http://localhost:8080
-- Check task status via API
 
-### Temporal UI not loading
-- Verify container is running: `docker ps | grep temporal-ui`
-- Check logs: `docker logs agentic-task-executor-temporal-ui-1`
-- Restart: `docker-compose restart temporal-ui`
-
-## 📍 Key URLs
+## Key URLs
 
 - **API Server**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
+- **Health Check**: http://localhost:8000/health
 - **Temporal UI**: http://localhost:8080
 - **Temporal gRPC**: localhost:7233
 - **PostgreSQL**: localhost:5432
 
-## 📝 Configuration
+## Configuration
 
-- Environment: `.env`
-- Docker setup: `docker-compose.yml`
-- Python deps: `requirements.txt`
-- Worker config: `src/config.py`
+All settings via environment variables (`.env` file):
 
-## 🔑 Environment Variables
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GCP_PROJECT_ID` | Yes | — | Google Cloud project for Vertex AI |
+| `GCP_REGION` | No | `us-east5` | Region for Vertex AI |
+| `GITHUB_TOKEN` | Yes | — | GitHub personal access token |
+| `TEMPORAL_HOST` | No | `localhost:7233` | Temporal server address |
+| `TEMPORAL_NAMESPACE` | No | `default` | Temporal namespace |
+| `TEMPORAL_TASK_QUEUE` | No | `agentic-tasks` | Temporal task queue |
+| `API_HOST` | No | `0.0.0.0` | API listen address |
+| `API_PORT` | No | `8000` | API listen port |
+| `LOG_LEVEL` | No | `INFO` | Log level |
+| `WORKSPACE_DIR` | No | `/tmp/agentic-workspaces` | Workspace directory |
 
-Required in `.env`:
-- `GCP_PROJECT_ID` - Google Cloud project for Vertex AI
-- `GCP_REGION` - Region for Vertex AI (default: us-east5)
-- `GITHUB_TOKEN` - GitHub personal access token
-- `TEMPORAL_HOST` - Temporal server address (default: localhost:7233)
+## Build Commands
 
-## ⚡ Quick Test
-
-Complete end-to-end test:
 ```bash
-# 1. Start everything
-docker-compose up -d
-source venv/bin/activate
-python -m src.worker &
-WORKER_PID=$!
-uvicorn src.api:app &
-API_PID=$!
-
-# 2. Wait for startup
-sleep 5
-
-# 3. Send test task
-curl -X POST http://localhost:8000/api/v1/execute-task \
-  -H "Content-Type: application/json" \
-  -d '{"repo_url": "https://github.com/openshift/managed-cluster-validating-webhooks", "task_description": "Test audit"}' \
-  > /tmp/task.json
-
-# 4. Get workflow ID and check status
-WORKFLOW_ID=$(jq -r '.workflow_id' /tmp/task.json)
-sleep 3
-curl http://localhost:8000/api/v1/task/$WORKFLOW_ID/status | jq
-
-# 5. Open Temporal UI
-open http://localhost:8080
-
-# 6. Cleanup
-kill $WORKER_PID $API_PID
+make build        # Build both binaries
+make run-api      # Build and run API server
+make run-worker   # Build and run Temporal worker
+make test         # Run tests
+make lint         # Run golangci-lint
+make clean        # Remove build artifacts
+make docker-up    # Start Temporal infrastructure
+make docker-down  # Stop Temporal infrastructure
 ```
-
-## 📚 Next Steps
-
-1. ✅ System is running
-2. ⏭️ Implement Claude SDK integration in `src/activities/agent_runtime.py`
-3. ⏭️ Test with real repository audits
-4. ⏭️ Add PR creation workflow
-5. ⏭️ Integrate with CI monitoring
-
-## 🆘 Getting Help
-
-- Check logs in worker/API terminals
-- View execution in Temporal UI
-- Review `ARCHITECTURE.md` for design details
-- See `GETTING_STARTED.md` for detailed setup
