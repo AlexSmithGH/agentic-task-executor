@@ -153,7 +153,6 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	}
 	agentOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Minute,
-		HeartbeatTimeout:    5 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 0,
 			InitialInterval: 5 * time.Second,
