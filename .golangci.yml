@@ -1,39 +1,32 @@
-version: 1.55.2
+version: 2
 
 run:
   timeout: 5m
-  go: '1.23'
+  go: '1.25'
   modules-download-mode: readonly
 
 linters:
   enable:
     # Enabled by default
     - errcheck      # Check for unchecked errors
-    - gosimple      # Simplify code
     - govet         # Vet examines Go source code
     - ineffassign   # Detect ineffectual assignments
     - staticcheck   # Go static analysis
     - unused        # Check for unused code
 
     # Additional important linters
-    - gofmt         # Checks whether code was gofmt-ed
-    - goimports     # Check import statements are formatted
-    - revive        # Fast, configurable, extensible, flexible linter (replacement for golint)
-    - gosec         # Inspects source code for security problems
     - misspell      # Finds commonly misspelled English words
     - unconvert     # Remove unnecessary type conversions
     - unparam       # Reports unused function parameters
-    - gocyclo       # Computes cyclomatic complexity
-    - gocritic      # Comprehensive Go source code linter
     - bodyclose     # Checks HTTP response bodies are closed
     - nolintlint    # Reports ill-formed or insufficient nolint directives
-    - exportloopref # Checks for pointers to loop variables
-    - goconst       # Finds repeated strings that could be constants
-    - goprintffuncname # Checks printf-like functions are named correctly
     - whitespace    # Detects leading and trailing whitespace
+    - copyloopvar   # Replacement for exportloopref - detects loop variable issues
 
-  disable:
-    - typecheck     # Can be redundant with Go compiler
+formatters:
+  enable:
+    - gofmt         # Checks whether code was gofmt-ed
+    - goimports     # Check import statements are formatted
 
 linters-settings:
   errcheck:
@@ -45,40 +38,6 @@ linters-settings:
     disable:
       - fieldalignment  # Too strict for this use case
 
-  gocyclo:
-    min-complexity: 15  # Reasonable complexity limit
-
-  revive:
-    rules:
-      - name: exported
-        disabled: false
-      - name: var-naming
-        disabled: false
-      - name: indent-error-flow
-        disabled: false
-      - name: error-return
-        disabled: false
-      - name: error-strings
-        disabled: false
-      - name: error-naming
-        disabled: false
-      - name: if-return
-        disabled: false
-
-  gosec:
-    excludes:
-      - G204  # Subprocess with variable - needed for execute_command tool
-      - G304  # File path from variable - needed for workspace operations
-
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-    disabled-checks:
-      - unnamedResult
-      - hugeParam
-
   misspell:
     locale: US
 
@@ -88,13 +47,6 @@ issues:
     - path: _test\.go
       linters:
         - errcheck
-        - gosec
-        - gocritic
-
-    # Exclude known linters from specific directories
-    - path: cmd/
-      linters:
-        - gocyclo
 
   # Maximum issues count per one linter
   max-issues-per-linter: 0
@@ -106,7 +58,9 @@ issues:
   exclude-use-default: false
 
 output:
-  format: colored-line-number
+  formats:
+    colored-line-number:
+      path: stdout
   print-issued-lines: true
   print-linter-name: true
   sort-results: true

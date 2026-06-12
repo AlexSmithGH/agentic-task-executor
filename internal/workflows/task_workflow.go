@@ -292,7 +292,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	if err != nil {
 		return WorkflowResult{
 			Success: false, Summary: "Implementation agent failed",
-			Details: map[string]any{"error": err.Error(), "audit_report": auditReport},
+			Details:       map[string]any{"error": err.Error(), "audit_report": auditReport},
 			WorkspacePath: workspacePath, ErrorMessage: err.Error(),
 		}, nil
 	}
@@ -415,11 +415,11 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 
 		// Agent handles fixes and commits; workflow pushes deterministically
 		feedbackContext := map[string]any{
-			"feedback_type":  string(event.Type),
-			"iteration":      feedbackIterations,
-			"pr_url":         prURL,
-			"original_task":  input.TaskDescription,
-			"branch_name":    branchName,
+			"feedback_type": string(event.Type),
+			"iteration":     feedbackIterations,
+			"pr_url":        prURL,
+			"original_task": input.TaskDescription,
+			"branch_name":   branchName,
 		}
 		feedbackTask := buildFeedbackTaskDescription(input.TaskDescription, event)
 

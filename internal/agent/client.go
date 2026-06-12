@@ -21,9 +21,9 @@ type ToolCall struct {
 }
 
 type AgentLoopResult struct {
-	FinalResponse string         `json:"final_response"`
-	Iterations    int            `json:"iterations"`
-	ToolCalls     []ToolCall     `json:"tool_calls"`
+	FinalResponse string     `json:"final_response"`
+	Iterations    int        `json:"iterations"`
+	ToolCalls     []ToolCall `json:"tool_calls"`
 }
 
 type ClaudeClient struct {
@@ -93,7 +93,7 @@ func (c *ClaudeClient) RunAgentLoop(ctx context.Context, initialPrompt, systemPr
 			case "tool_use":
 				tu := block.AsToolUse()
 				toolUses = append(toolUses, tu)
-				assistantBlocks = append(assistantBlocks, anthropic.NewToolUseBlock(tu.ID, json.RawMessage(tu.Input), tu.Name))
+				assistantBlocks = append(assistantBlocks, anthropic.NewToolUseBlock(tu.ID, tu.Input, tu.Name))
 			case "text":
 				t := block.AsText()
 				textParts = append(textParts, t.Text)

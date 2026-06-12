@@ -8,8 +8,8 @@ import (
 )
 
 type Config struct {
-	GCPProjectID                string `env:"GCP_PROJECT_ID,required"`
-	GCPRegion                   string `env:"GCP_REGION" envDefault:"us-east5"`
+	GCPProjectID                 string `env:"GCP_PROJECT_ID,required"`
+	GCPRegion                    string `env:"GCP_REGION" envDefault:"us-east5"`
 	GoogleApplicationCredentials string `env:"GOOGLE_APPLICATION_CREDENTIALS"`
 
 	GitHubToken string `env:"GITHUB_TOKEN,required"`
