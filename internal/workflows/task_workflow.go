@@ -140,32 +140,34 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	cloneOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
+			MaximumAttempts: 0,
 			InitialInterval: 1 * time.Second,
-			MaximumInterval: 10 * time.Second,
+			MaximumInterval: 30 * time.Second,
 		},
 	}
 	agentOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Minute,
 		HeartbeatTimeout:    5 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts:        2,
-			InitialInterval:        5 * time.Second,
-			NonRetryableErrorTypes: []string{"ValidationError"},
+			MaximumAttempts: 0,
+			InitialInterval: 5 * time.Second,
+			MaximumInterval: 1 * time.Minute,
 		},
 	}
 	gitOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
+			MaximumAttempts: 0,
 			InitialInterval: 2 * time.Second,
+			MaximumInterval: 30 * time.Second,
 		},
 	}
 	prOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 3 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
+			MaximumAttempts: 0,
 			InitialInterval: 2 * time.Second,
+			MaximumInterval: 30 * time.Second,
 		},
 	}
 	watchOpts := workflow.ActivityOptions{
