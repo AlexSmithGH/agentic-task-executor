@@ -23,6 +23,9 @@ type Config struct {
 	LogLevel string `env:"LOG_LEVEL" envDefault:"INFO"`
 
 	WorkspaceDir string `env:"WORKSPACE_DIR" envDefault:"/tmp/agentic-workspaces"`
+
+	ClaudeModel     string `env:"CLAUDE_MODEL" envDefault:"claude-sonnet-4-5@20250929"`
+	ClaudeMaxTokens int64  `env:"CLAUDE_MAX_TOKENS" envDefault:"8192"`
 }
 
 func Load() (*Config, error) {

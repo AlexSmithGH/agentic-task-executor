@@ -41,8 +41,8 @@ func (a *AgentActivities) AgentReasoningStep(ctx context.Context, workspace, tas
 		ctx,
 		a.Config.GCPProjectID,
 		a.Config.GCPRegion,
-		"claude-sonnet-4-5@20250929",
-		8192,
+		a.Config.ClaudeModel,
+		a.Config.ClaudeMaxTokens,
 	)
 
 	tools := agent.GetToolDefinitions()
