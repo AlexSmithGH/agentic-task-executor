@@ -1,0 +1,138 @@
+{
+  "project_context": {
+    "name": "Agentic Task Executor",
+    "type": "go-service",
+    "language": "go",
+    "version": "1.23",
+    "framework": "temporal",
+    "description": "AI-powered task execution service for repository automation",
+    "testing_required": true,
+    "linting_required": true
+  },
+  "hooks": {
+    "pre_edit": [
+      "make lint",
+      "make test"
+    ],
+    "post_edit": [
+      "make lint",
+      "make test",
+      "make build"
+    ],
+    "pre_commit": [
+      "make lint",
+      "make test"
+    ]
+  },
+  "development": {
+    "build_command": "make build",
+    "test_command": "make test",
+    "lint_command": "make lint",
+    "run_commands": {
+      "api": "make run-api",
+      "worker": "make run-worker",
+      "dev": "make dev"
+    },
+    "docker_commands": {
+      "up": "make docker-up",
+      "down": "make docker-down",
+      "logs": "make docker-logs"
+    }
+  },
+  "code_style": {
+    "formatter": "gofmt",
+    "linter": "golangci-lint",
+    "import_organizer": "goimports",
+    "max_line_length": 120,
+    "conventions": [
+      "Follow standard Go conventions",
+      "Use structured logging (log/slog)",
+      "Always wrap errors with context",
+      "Workflows must be deterministic",
+      "Activities should be idempotent"
+    ]
+  },
+  "ai_guidance": {
+    "documentation": [
+      "README.md - Project overview and quick start",
+      "CLAUDE.md - AI agent development guide",
+      "docs/ARCHITECTURE.md - System architecture and design",
+      "docs/GETTING_STARTED.md - Setup instructions",
+      "docs/QUICK_REFERENCE.md - Command and config reference"
+    ],
+    "key_patterns": {
+      "workflows": "Must be deterministic, use workflow.* functions",
+      "activities": "Can do I/O, should be idempotent, struct-based registration",
+      "error_handling": "Always wrap errors with context using fmt.Errorf with %w",
+      "logging": "Use log/slog with structured fields"
+    },
+    "common_tasks": {
+      "add_activity": [
+        "Create method on activities struct",
+        "Register in cmd/worker/main.go",
+        "Call from workflow using workflow.ExecuteActivity"
+      ],
+      "add_endpoint": [
+        "Define models in internal/api/models.go",
+        "Add handler in internal/api/handler.go",
+        "Register route in internal/api/server.go"
+      ],
+      "add_workflow": [
+        "Create workflow function in internal/workflows/",
+        "Register in cmd/worker/main.go",
+        "Start from API using client.ExecuteWorkflow"
+      ]
+    }
+  },
+  "quality_gates": {
+    "required_checks": [
+      "Linting passes (golangci-lint)",
+      "Tests pass (go test ./...)",
+      "Build succeeds (make build)",
+      "No security issues (gosec)",
+      "Code formatted (gofmt, goimports)"
+    ],
+    "ci_pipeline": ".github/workflows/ci.yml",
+    "pre_commit_hooks": ".pre-commit-config.yaml"
+  },
+  "dependencies": {
+    "core": [
+      "go.temporal.io/sdk - Workflow orchestration",
+      "github.com/anthropics/anthropic-sdk-go - Claude AI",
+      "github.com/go-chi/chi/v5 - HTTP router",
+      "github.com/google/go-github/v68 - GitHub API",
+      "github.com/go-git/go-git/v5 - Git operations"
+    ],
+    "testing": [
+      "testing - Go stdlib testing",
+      "go.temporal.io/sdk/testsuite - Temporal testing"
+    ]
+  },
+  "environment": {
+    "required_vars": [
+      "GCP_PROJECT_ID",
+      "GCP_REGION",
+      "GITHUB_TOKEN",
+      "TEMPORAL_HOST",
+      "TEMPORAL_NAMESPACE",
+      "TEMPORAL_TASK_QUEUE"
+    ],
+    "optional_vars": [
+      "GOOGLE_APPLICATION_CREDENTIALS",
+      "API_HOST",
+      "API_PORT",
+      "LOG_LEVEL",
+      "WORKSPACE_DIR"
+    ],
+    "config_file": ".env.example"
+  },
+  "debugging": {
+    "temporal_ui": "http://localhost:8080",
+    "api_health": "http://localhost:8000/health",
+    "log_locations": [
+      "API: stdout (structured JSON)",
+      "Worker: stdout (structured JSON)",
+      "Temporal: docker-compose logs temporal"
+    ]
+  }
+}
