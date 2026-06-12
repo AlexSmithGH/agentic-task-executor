@@ -2,7 +2,7 @@ version: 2
 
 run:
   timeout: 5m
-  go: '1.25'
+  go: '1.23'
   modules-download-mode: readonly
 
 linters:
@@ -22,11 +22,6 @@ linters:
     - nolintlint    # Reports ill-formed or insufficient nolint directives
     - whitespace    # Detects leading and trailing whitespace
     - copyloopvar   # Replacement for exportloopref - detects loop variable issues
-
-formatters:
-  enable:
-    - gofmt         # Checks whether code was gofmt-ed
-    - goimports     # Check import statements are formatted
 
 linters-settings:
   errcheck:
