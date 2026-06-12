@@ -280,6 +280,20 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	}
 	lastCommitSHA := commitResult.CommitSHA
 
+	// If commit was empty (no actual file changes), skip PR creation
+	if lastCommitSHA == "" {
+		logger.Info("No file changes to commit, skipping PR creation")
+		return WorkflowResult{
+			Success: true, Summary: agentResult.Summary,
+			Details: map[string]any{
+				"files_modified": agentResult.FilesModified,
+				"changes_made":   false,
+				"reasoning":      agentResult.Reasoning,
+			},
+			WorkspacePath: workspacePath,
+		}, nil
+	}
+
 	var pushResult PushResult
 	err = workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, gitOpts),
