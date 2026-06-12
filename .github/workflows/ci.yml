@@ -149,13 +149,29 @@ jobs:
           echo "  audit: ${{ needs.audit.result }}"
           echo ""
           
-          # Check if any required job failed or was cancelled
-          if [ "${{ needs.lint.result }}" == "failure" ] || [ "${{ needs.lint.result }}" == "cancelled" ] || \
-             [ "${{ needs.test.result }}" == "failure" ] || [ "${{ needs.test.result }}" == "cancelled" ] || \
-             [ "${{ needs.build.result }}" == "failure" ] || [ "${{ needs.build.result }}" == "cancelled" ] || \
-             [ "${{ needs.security.result }}" == "failure" ] || [ "${{ needs.security.result }}" == "cancelled" ] || \
-             [ "${{ needs.audit.result }}" == "failure" ] || [ "${{ needs.audit.result }}" == "cancelled" ]; then
-            echo "❌ One or more required checks failed or were cancelled"
+          # Check if all required jobs succeeded
+          if [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "❌ Lint check did not succeed (status: ${{ needs.lint.result }})"
+            exit 1
+          fi
+          
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "❌ Test check did not succeed (status: ${{ needs.test.result }})"
+            exit 1
+          fi
+          
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "❌ Build check did not succeed (status: ${{ needs.build.result }})"
+            exit 1
+          fi
+          
+          if [ "${{ needs.security.result }}" != "success" ]; then
+            echo "❌ Security check did not succeed (status: ${{ needs.security.result }})"
+            exit 1
+          fi
+          
+          if [ "${{ needs.audit.result }}" != "success" ]; then
+            echo "❌ Audit check did not succeed (status: ${{ needs.audit.result }})"
             exit 1
           fi
           
