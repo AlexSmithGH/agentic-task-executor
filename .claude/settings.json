@@ -1,0 +1,150 @@
+{
+  "description": "Claude AI assistant settings for Agentic Task Executor",
+  "version": "1.0.0",
+  
+  "hooks": {
+    "pre-commit": [
+      "make lint",
+      "make test"
+    ],
+    "pre-push": [
+      "make test",
+      "make build"
+    ]
+  },
+  
+  "context_files": [
+    "CLAUDE.md",
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/GETTING_STARTED.md",
+    "docs/QUICK_REFERENCE.md",
+    "docs/PROJECT_STATUS.md"
+  ],
+  
+  "important_patterns": {
+    "temporal_workflow_rules": [
+      "Never use time.Sleep(), use workflow.Sleep()",
+      "Never use time.Now(), use workflow.Now()",
+      "Never use math.Rand(), use workflow.NewRandom()",
+      "No direct I/O in workflow functions",
+      "Use workflow.ExecuteActivity() for all side effects"
+    ],
+    "activity_patterns": [
+      "Use struct-based registration for dependency injection",
+      "All exported methods become activities",
+      "Use activity.GetLogger(ctx) for logging",
+      "Add heartbeats for long operations with activity.RecordHeartbeat()"
+    ],
+    "security_requirements": [
+      "Validate all file paths stay within workspace",
+      "Sandbox command execution to workspace directory",
+      "Use 30 second timeout for command execution",
+      "Never log secrets or tokens"
+    ]
+  },
+  
+  "code_style": {
+    "language": "Go 1.23+",
+    "formatter": "gofmt",
+    "linter": "golangci-lint",
+    "conventions": [
+      "PascalCase for exported functions",
+      "camelCase for unexported functions",
+      "Wrap errors with context using fmt.Errorf with %w",
+      "Add godoc comments for all exported types and functions"
+    ]
+  },
+  
+  "testing": {
+    "framework": "go test",
+    "run_command": "make test",
+    "coverage_goal": 80,
+    "test_patterns": [
+      "Unit tests in *_test.go files",
+      "Integration tests using Temporal test suite",
+      "Table-driven tests preferred"
+    ]
+  },
+  
+  "build_and_run": {
+    "build": "make build",
+    "run_api": "make run-api",
+    "run_worker": "make run-worker",
+    "dev_environment": "make dev",
+    "prerequisites": [
+      "Docker for Temporal server",
+      "Go 1.23+",
+      "Environment variables in .env file"
+    ]
+  },
+  
+  "ai_agent_guidelines": {
+    "before_changes": [
+      "Read CLAUDE.md for project-specific patterns",
+      "Review docs/ARCHITECTURE.md for system design",
+      "Check existing implementations for similar features",
+      "Understand Temporal workflow vs activity distinction"
+    ],
+    "when_adding_features": [
+      "Follow existing code patterns and structure",
+      "Add appropriate error handling and logging",
+      "Update documentation (CLAUDE.md, README.md, etc.)",
+      "Add tests for new functionality",
+      "Validate changes compile with 'make build'"
+    ],
+    "when_modifying_workflows": [
+      "Never break Temporal workflow determinism rules",
+      "Consider impact on running workflows",
+      "Update activity timeout configurations if needed",
+      "Test with Temporal UI for workflow history"
+    ],
+    "common_mistakes_to_avoid": [
+      "Using time.Sleep() or time.Now() in workflows",
+      "Direct I/O operations in workflow functions",
+      "File operations without workspace path validation",
+      "Missing error context wrapping",
+      "Forgetting to register new activities in cmd/worker/main.go"
+    ]
+  },
+  
+  "useful_commands": {
+    "start_temporal": "make docker-up",
+    "stop_temporal": "make docker-down",
+    "view_logs": "make docker-logs",
+    "lint_code": "make lint",
+    "run_tests": "make test",
+    "build_binaries": "make build",
+    "clean_artifacts": "make clean",
+    "full_dev_env": "make dev"
+  },
+  
+  "debugging": {
+    "temporal_ui": "http://localhost:8080",
+    "api_endpoint": "http://localhost:8000",
+    "health_check": "curl http://localhost:8000/health",
+    "check_workflow_status": "curl http://localhost:8000/api/v1/task/{workflow_id}/status"
+  },
+  
+  "key_files": {
+    "entry_points": [
+      "cmd/api/main.go",
+      "cmd/worker/main.go"
+    ],
+    "core_logic": [
+      "internal/workflows/task_workflow.go",
+      "internal/activities/",
+      "internal/agent/client.go",
+      "internal/api/handler.go"
+    ],
+    "configuration": [
+      "internal/config/config.go",
+      ".env.example"
+    ],
+    "documentation": [
+      "CLAUDE.md",
+      "README.md",
+      "docs/"
+    ]
+  }
+}
