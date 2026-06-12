@@ -186,7 +186,27 @@ func (e *ToolExecutor) readFile(filePath string) string {
 	return string(data)
 }
 
+var blockedFilePatterns = []string{
+	"_REPORT", "_SUMMARY", "_AUDIT", "_FINDINGS", "_ANALYSIS",
+	"REPORT.md", "SUMMARY.md", "AUDIT.md", "FINDINGS.md",
+	"validate_", "check_", "verify_",
+}
+
+func isBlockedFile(filePath string) bool {
+	base := strings.ToUpper(filepath.Base(filePath))
+	for _, pattern := range blockedFilePatterns {
+		if strings.Contains(base, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *ToolExecutor) writeFile(filePath, content string) string {
+	if isBlockedFile(filePath) {
+		return fmt.Sprintf("Error: Refused to create %s — do not create report, summary, audit, or validation script files. Only create files the project actually needs.", filePath)
+	}
+
 	absPath, err := e.validatePath(filePath)
 	if err != nil {
 		return "Error: " + err.Error()
