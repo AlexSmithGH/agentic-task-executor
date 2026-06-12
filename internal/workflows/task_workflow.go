@@ -185,7 +185,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		},
 	}
 
-	// ===== Phase 1: Setup =====
+	// ===== Phase 1: Clone =====
 	phase = "cloning"
 
 	workspaceDir := fmt.Sprintf("/tmp/agentic-workspaces/%s", workflow.GetInfo(ctx).WorkflowExecution.ID)
@@ -211,18 +211,6 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	branchName := input.BranchName
 	if branchName == "" {
 		branchName = fmt.Sprintf("agentic/%s", workflow.GetInfo(ctx).WorkflowExecution.ID)
-	}
-
-	var branchResult BranchResult
-	err = workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, gitOpts),
-		"CreateBranch", workspacePath, branchName,
-	).Get(ctx, &branchResult)
-	if err != nil {
-		return WorkflowResult{
-			Success: false, Summary: "Failed to create branch",
-			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
-		}, nil
 	}
 
 	// ===== Phase 2: Audit =====
@@ -284,12 +272,16 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	logger.Info("Implementation approved", "reason", reason)
 
 	// ===== Phase 4: Implementation =====
+	// The agent handles branching, file changes, and committing via execute_command.
+	// The workflow only does the deterministic push + PR creation after.
 	phase = "implementing"
 
-	implPrompt := buildImplementationPrompt(auditReport, input.TaskDescription)
+	implPrompt := buildImplementationPrompt(auditReport, input.TaskDescription, branchName)
 	implContext := map[string]any{
-		"phase":        "implementation",
-		"audit_report": auditReport,
+		"phase":          "implementation",
+		"audit_report":   auditReport,
+		"branch_name":    branchName,
+		"default_branch": defaultBranch,
 	}
 
 	var implResult AgentResult
@@ -309,46 +301,16 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		return WorkflowResult{
 			Success: true, Summary: "Audit complete, no changes needed",
 			Details: map[string]any{
-				"audit_report":  auditReport,
-				"implementation": implResult.Summary,
-			},
-			WorkspacePath: workspacePath,
-		}, nil
-	}
-
-	// ===== Phase 5: Commit, push, PR =====
-	phase = "creating_pr"
-
-	commitMsg := implResult.CommitMessage
-	if commitMsg == "" {
-		commitMsg = "Implement audit recommendations"
-	}
-
-	var commitResult CommitResult
-	err = workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, gitOpts),
-		"CommitChanges", workspacePath, commitMsg,
-	).Get(ctx, &commitResult)
-	if err != nil {
-		return WorkflowResult{
-			Success: false, Summary: "Failed to commit changes",
-			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
-		}, nil
-	}
-	lastCommitSHA := commitResult.CommitSHA
-
-	if lastCommitSHA == "" {
-		logger.Info("No file changes to commit, skipping PR creation")
-		return WorkflowResult{
-			Success: true, Summary: implResult.Summary,
-			Details: map[string]any{
 				"audit_report":   auditReport,
 				"implementation": implResult.Summary,
-				"changes_made":   false,
 			},
 			WorkspacePath: workspacePath,
 		}, nil
 	}
+
+	// ===== Phase 5: Push and create PR =====
+	// The agent already created the branch and committed. We push deterministically.
+	phase = "creating_pr"
 
 	var pushResult PushResult
 	err = workflow.ExecuteActivity(
@@ -360,6 +322,11 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			Success: false, Summary: "Failed to push changes",
 			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
 		}, nil
+	}
+
+	commitMsg := implResult.CommitMessage
+	if commitMsg == "" {
+		commitMsg = "Implement audit recommendations"
 	}
 
 	var prResult PRResult
@@ -382,9 +349,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		}, nil
 	}
 	prURL = prResult.PRURL
-	if prResult.HeadSHA != "" {
-		lastCommitSHA = prResult.HeadSHA
-	}
+	lastCommitSHA := prResult.HeadSHA
 	logger.Info("Pull request created", "url", prURL)
 
 	if !input.WaitForCI {
@@ -448,11 +413,13 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			}, nil
 		}
 
+		// Agent handles fixes and commits; workflow pushes deterministically
 		feedbackContext := map[string]any{
-			"feedback_type": string(event.Type),
-			"iteration":     feedbackIterations,
-			"pr_url":        prURL,
-			"original_task": input.TaskDescription,
+			"feedback_type":  string(event.Type),
+			"iteration":      feedbackIterations,
+			"pr_url":         prURL,
+			"original_task":  input.TaskDescription,
+			"branch_name":    branchName,
 		}
 		feedbackTask := buildFeedbackTaskDescription(input.TaskDescription, event)
 
@@ -480,22 +447,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			continue
 		}
 
-		fixCommitMsg := fixResult.CommitMessage
-		if fixCommitMsg == "" {
-			fixCommitMsg = fmt.Sprintf("Address feedback (iteration %d)", feedbackIterations)
-		}
-
-		var fixCommit CommitResult
-		err = workflow.ExecuteActivity(
-			workflow.WithActivityOptions(ctx, gitOpts),
-			"CommitChanges", workspacePath, fixCommitMsg,
-		).Get(ctx, &fixCommit)
-		if err != nil {
-			logger.Error("Commit failed", "error", err)
-			continue
-		}
-		lastCommitSHA = fixCommit.CommitSHA
-
+		// Push the agent's commit
 		var fixPush PushResult
 		err = workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, gitOpts),
@@ -508,21 +460,31 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 
 		ciStatus = "pending"
 		seenCommentIDs = updateSeenCommentIDs(seenCommentIDs, event.Comments)
-		logger.Info("Fix pushed", "commit", lastCommitSHA, "iteration", feedbackIterations)
+		logger.Info("Fix pushed", "iteration", feedbackIterations)
 	}
 }
 
-func buildImplementationPrompt(auditReport, originalTask string) string {
-	return fmt.Sprintf(`Implement the recommended changes from the following audit.
+func buildImplementationPrompt(auditReport, originalTask, branchName string) string {
+	return fmt.Sprintf(`You are an expert software engineer implementing changes based on an audit report.
 
 Original task: %s
 
 Audit findings:
 %s
 
-Use write_file to create or modify files. Use execute_command to verify your changes.
-Focus on actionable, high-priority items. Skip findings that require external action.
-After making all changes, summarize what you implemented.`, originalTask, auditReport)
+INSTRUCTIONS:
+1. Create and checkout a new branch: git checkout -b %s
+2. Make the recommended changes using write_file
+3. Stage ONLY the files you intentionally changed (use git add <specific files>, NOT git add .)
+4. Commit with a clear, concise commit message (use execute_command to run git commit)
+5. Do NOT push — the system will handle pushing after validating your commit
+
+IMPORTANT:
+- Do NOT create any metadata, summary, or report files — only create files the project needs
+- Do NOT stage files you didn't intentionally create or modify
+- Focus on actionable, high-priority items from the audit
+- Skip findings that require external action (e.g., enabling GitHub settings)
+- Verify your changes compile or pass basic validation before committing`, originalTask, auditReport, branchName)
 }
 
 func extractRepoSlug(repoURL string) string {
@@ -539,7 +501,16 @@ func buildFeedbackTaskDescription(originalTask string, event PREvent) string {
 	switch event.Type {
 	case PREventCIFailure:
 		return fmt.Sprintf(
-			"Fix CI failure for: %s\n\nCI failure details:\n%s",
+			`Fix CI failure for: %s
+
+CI failure details:
+%s
+
+INSTRUCTIONS:
+1. Analyze the failure and fix the code
+2. Stage ONLY the files you changed (git add <specific files>)
+3. Commit with a message describing the fix
+4. Do NOT push — the system handles that`,
 			originalTask, event.CIDetails,
 		)
 	case PREventReviewFeedback:
@@ -552,7 +523,16 @@ func buildFeedbackTaskDescription(originalTask string, event PREvent) string {
 			lines = append(lines, line)
 		}
 		return fmt.Sprintf(
-			"Address review feedback for: %s\n\nReview comments:\n%s",
+			`Address review feedback for: %s
+
+Review comments:
+%s
+
+INSTRUCTIONS:
+1. Address each review comment by modifying the appropriate files
+2. Stage ONLY the files you changed (git add <specific files>)
+3. Commit with a message describing what you addressed
+4. Do NOT push — the system handles that`,
 			originalTask, strings.Join(lines, "\n"),
 		)
 	default:
