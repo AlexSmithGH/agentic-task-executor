@@ -133,6 +133,10 @@ func (e *ToolExecutor) ExecuteTool(name string, input map[string]any) string {
 	case "execute_command":
 		cmd, _ := input["command"].(string)
 		return e.executeCommand(cmd)
+	case "write_file":
+		fp, _ := input["file_path"].(string)
+		content, _ := input["content"].(string)
+		return e.writeFile(fp, content)
 	case "search_files":
 		pattern, _ := input["pattern"].(string)
 		filePattern, _ := input["file_pattern"].(string)
@@ -180,6 +184,21 @@ func (e *ToolExecutor) readFile(filePath string) string {
 		return fmt.Sprintf("Error reading file: %v", err)
 	}
 	return string(data)
+}
+
+func (e *ToolExecutor) writeFile(filePath, content string) string {
+	absPath, err := e.validatePath(filePath)
+	if err != nil {
+		return "Error: " + err.Error()
+	}
+	dir := filepath.Dir(absPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Sprintf("Error creating directory: %v", err)
+	}
+	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		return fmt.Sprintf("Error writing file: %v", err)
+	}
+	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), filePath)
 }
 
 func (e *ToolExecutor) listFiles(directory string) string {

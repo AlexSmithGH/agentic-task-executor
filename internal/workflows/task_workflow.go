@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -18,13 +19,14 @@ type WorkflowInput struct {
 }
 
 type WorkflowResult struct {
-	Success      bool           `json:"success"`
-	Summary      string         `json:"summary"`
-	Details      map[string]any `json:"details"`
-	PRURL        string         `json:"pr_url,omitempty"`
-	CIStatus     string         `json:"ci_status,omitempty"`
-	WorkspacePath string        `json:"workspace_path,omitempty"`
-	ErrorMessage string         `json:"error_message,omitempty"`
+	Success            bool           `json:"success"`
+	Summary            string         `json:"summary"`
+	Details            map[string]any `json:"details"`
+	PRURL              string         `json:"pr_url,omitempty"`
+	CIStatus           string         `json:"ci_status,omitempty"`
+	WorkspacePath      string         `json:"workspace_path,omitempty"`
+	ErrorMessage       string         `json:"error_message,omitempty"`
+	FeedbackIterations int            `json:"feedback_iterations,omitempty"`
 }
 
 type CloneResult struct {
@@ -51,22 +53,65 @@ type PRCreateInput struct {
 	CommitMessage   string   `json:"commit_message"`
 	TaskDescription string   `json:"task_description"`
 	FilesModified   []string `json:"files_modified"`
+	Repo            string   `json:"repo,omitempty"`
+	BaseBranch      string   `json:"base_branch,omitempty"`
 }
 
 type PRResult struct {
-	PRURL      string `json:"pr_url"`
-	PRNumber   int    `json:"pr_number"`
-	BranchName string `json:"branch_name"`
-}
-
-type CIWaitInput struct {
+	PRURL    string `json:"pr_url"`
 	PRNumber int    `json:"pr_number"`
-	RepoURL  string `json:"repo_url"`
+	HeadSHA  string `json:"head_sha,omitempty"`
+	Success  bool   `json:"success"`
 }
 
-type CIResult struct {
-	Status string `json:"status"`
-	Checks []any  `json:"checks,omitempty"`
+type CommitResult struct {
+	CommitSHA string `json:"commit_sha"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}
+
+type PushResult struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+type BranchResult struct {
+	BranchName string `json:"branch_name"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
+}
+
+// PR watcher types
+type PREventType string
+
+const (
+	PREventCIFailure      PREventType = "ci_failure"
+	PREventReviewFeedback PREventType = "review_feedback"
+	PREventMerged         PREventType = "merged"
+	PREventClosed         PREventType = "closed"
+)
+
+type PRWatchInput struct {
+	PRURL              string  `json:"pr_url"`
+	LastKnownCommitSHA string  `json:"last_known_commit_sha"`
+	LastSeenCommentIDs []int64 `json:"last_seen_comment_ids"`
+	PollInterval       string  `json:"poll_interval,omitempty"`
+}
+
+type PREvent struct {
+	Type      PREventType `json:"type"`
+	CIDetails string      `json:"ci_details,omitempty"`
+	Comments  []Comment   `json:"comments,omitempty"`
+	PRState   string      `json:"pr_state"`
+}
+
+type Comment struct {
+	ID        int64  `json:"id"`
+	Author    string `json:"author"`
+	Body      string `json:"body"`
+	Path      string `json:"path,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult, error) {
@@ -75,13 +120,14 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	var workspacePath string
 	var prURL string
 	var ciStatus string
+	var feedbackIterations int
 
-	// Query handler for status checks
 	err := workflow.SetQueryHandler(ctx, "get_status", func() (map[string]any, error) {
 		return map[string]any{
-			"workspace_path": workspacePath,
-			"pr_url":         prURL,
-			"ci_status":      ciStatus,
+			"workspace_path":      workspacePath,
+			"pr_url":              prURL,
+			"ci_status":           ciStatus,
+			"feedback_iterations": feedbackIterations,
 		}, nil
 	})
 	if err != nil {
@@ -90,33 +136,16 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 
 	logger.Info("Starting agentic task workflow", "repo", input.RepoURL, "task", input.TaskDescription)
 
-	// Step 1: Clone repository
-	workspaceDir := fmt.Sprintf("/tmp/agentic-workspaces/%s", workflow.GetInfo(ctx).WorkflowExecution.ID)
-
-	cloneCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+	// Activity option presets
+	cloneOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 3,
 			InitialInterval: 1 * time.Second,
 			MaximumInterval: 10 * time.Second,
 		},
-	})
-
-	var cloneResult CloneResult
-	err = workflow.ExecuteActivity(cloneCtx, "CloneRepository", input.RepoURL, workspaceDir).Get(ctx, &cloneResult)
-	if err != nil {
-		return WorkflowResult{
-			Success:      false,
-			Summary:      "Failed to clone repository",
-			Details:      map[string]any{"error": err.Error()},
-			ErrorMessage: err.Error(),
-		}, nil
 	}
-	workspacePath = cloneResult.WorkspacePath
-	logger.Info("Repository cloned", "path", workspacePath)
-
-	// Step 2: Execute agent reasoning loop
-	agentCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+	agentOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Minute,
 		HeartbeatTimeout:    5 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
@@ -124,8 +153,68 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			InitialInterval:        5 * time.Second,
 			NonRetryableErrorTypes: []string{"ValidationError"},
 		},
-	})
+	}
+	gitOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+			InitialInterval: 2 * time.Second,
+		},
+	}
+	prOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 3 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+			InitialInterval: 2 * time.Second,
+		},
+	}
+	watchOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 7 * 24 * time.Hour,
+		HeartbeatTimeout:    2 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 0, // infinite
+			InitialInterval: 10 * time.Second,
+			MaximumInterval: 5 * time.Minute,
+		},
+	}
 
+	// Step 1: Clone repository
+	workspaceDir := fmt.Sprintf("/tmp/agentic-workspaces/%s", workflow.GetInfo(ctx).WorkflowExecution.ID)
+
+	var cloneResult CloneResult
+	err = workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, cloneOpts),
+		"CloneRepository", input.RepoURL, workspaceDir,
+	).Get(ctx, &cloneResult)
+	if err != nil {
+		return WorkflowResult{
+			Success: false, Summary: "Failed to clone repository",
+			Details: map[string]any{"error": err.Error()}, ErrorMessage: err.Error(),
+		}, nil
+	}
+	workspacePath = cloneResult.WorkspacePath
+	logger.Info("Repository cloned", "path", workspacePath)
+
+	// Step 2: Create branch
+	branchName := input.BranchName
+	if branchName == "" {
+		branchName = fmt.Sprintf("agentic/%s", workflow.GetInfo(ctx).WorkflowExecution.ID)
+	}
+
+	var branchResult BranchResult
+	err = workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, gitOpts),
+		"CreateBranch", workspacePath, branchName,
+	).Get(ctx, &branchResult)
+	if err != nil {
+		return WorkflowResult{
+			Success: false, Summary: "Failed to create branch",
+			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
+		}, nil
+	}
+	logger.Info("Branch created", "branch", branchName)
+
+	// Step 3: Execute agent reasoning
 	checklist := input.Checklist
 	if checklist == nil {
 		checklist = []string{}
@@ -136,100 +225,268 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	}
 
 	var agentResult AgentResult
-	err = workflow.ExecuteActivity(agentCtx, "AgentReasoningStep",
-		workspacePath, input.TaskDescription, checklist, taskContext,
+	err = workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, agentOpts),
+		"AgentReasoningStep", workspacePath, input.TaskDescription, checklist, taskContext,
 	).Get(ctx, &agentResult)
 	if err != nil {
 		return WorkflowResult{
-			Success:       false,
-			Summary:       "Agent execution failed",
-			Details:       map[string]any{"error": err.Error()},
-			WorkspacePath: workspacePath,
-			ErrorMessage:  err.Error(),
+			Success: false, Summary: "Agent execution failed",
+			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
 		}, nil
 	}
-
 	if !agentResult.Success {
 		return WorkflowResult{
-			Success:       false,
-			Summary:       "Agent execution failed",
-			Details:       map[string]any{"error": agentResult.Error},
+			Success: false, Summary: "Agent execution failed",
+			Details: map[string]any{"error": agentResult.Error}, WorkspacePath: workspacePath, ErrorMessage: agentResult.Error,
+		}, nil
+	}
+	logger.Info("Agent completed", "summary", agentResult.Summary, "changes_made", agentResult.ChangesMade)
+
+	if !agentResult.ChangesMade {
+		return WorkflowResult{
+			Success: true, Summary: agentResult.Summary,
+			Details: map[string]any{
+				"files_modified": agentResult.FilesModified,
+				"changes_made":   false,
+				"reasoning":      agentResult.Reasoning,
+			},
 			WorkspacePath: workspacePath,
-			ErrorMessage:  agentResult.Error,
 		}, nil
 	}
 
-	logger.Info("Agent completed", "summary", agentResult.Summary)
+	// Step 4: Commit and push
+	commitMsg := agentResult.CommitMessage
+	if commitMsg == "" {
+		commitMsg = "Agent changes"
+	}
 
-	// Step 3: Create PR if changes were made
-	if agentResult.ChangesMade {
-		prCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 3 * time.Minute,
-			RetryPolicy: &temporal.RetryPolicy{
-				MaximumAttempts: 3,
-				InitialInterval: 2 * time.Second,
-			},
-		})
+	var commitResult CommitResult
+	err = workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, gitOpts),
+		"CommitChanges", workspacePath, commitMsg,
+	).Get(ctx, &commitResult)
+	if err != nil {
+		return WorkflowResult{
+			Success: false, Summary: "Failed to commit changes",
+			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
+		}, nil
+	}
+	lastCommitSHA := commitResult.CommitSHA
 
-		commitMsg := agentResult.CommitMessage
-		if commitMsg == "" {
-			commitMsg = "Agent changes"
-		}
+	var pushResult PushResult
+	err = workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, gitOpts),
+		"PushChanges", workspacePath,
+	).Get(ctx, &pushResult)
+	if err != nil {
+		return WorkflowResult{
+			Success: false, Summary: "Failed to push changes",
+			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
+		}, nil
+	}
 
-		var prResult PRResult
-		err = workflow.ExecuteActivity(prCtx, "CreatePullRequest", PRCreateInput{
+	// Step 5: Create PR
+	var prResult PRResult
+	err = workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, prOpts),
+		"CreatePullRequest", PRCreateInput{
 			WorkspacePath:   workspacePath,
-			BranchName:      input.BranchName,
+			BranchName:      branchName,
 			CommitMessage:   commitMsg,
 			TaskDescription: input.TaskDescription,
 			FilesModified:   agentResult.FilesModified,
-		}).Get(ctx, &prResult)
+			Repo:            extractRepoSlug(input.RepoURL),
+		},
+	).Get(ctx, &prResult)
+	if err != nil {
+		return WorkflowResult{
+			Success: false, Summary: "Failed to create pull request",
+			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
+		}, nil
+	}
+	prURL = prResult.PRURL
+	if prResult.HeadSHA != "" {
+		lastCommitSHA = prResult.HeadSHA
+	}
+	logger.Info("Pull request created", "url", prURL)
+
+	// If not watching for CI/feedback, return now
+	if !input.WaitForCI {
+		return WorkflowResult{
+			Success: true, Summary: agentResult.Summary,
+			Details: map[string]any{
+				"files_modified": agentResult.FilesModified,
+				"changes_made":   true,
+				"reasoning":      agentResult.Reasoning,
+			},
+			PRURL: prURL, WorkspacePath: workspacePath,
+		}, nil
+	}
+
+	// Step 6: Feedback loop — watch PR until merged or closed
+	var seenCommentIDs []int64
+
+	for {
+		feedbackIterations++
+		logger.Info("Feedback loop iteration", "iteration", feedbackIterations)
+
+		// Watch PR for events
+		var event PREvent
+		err = workflow.ExecuteActivity(
+			workflow.WithActivityOptions(ctx, watchOpts),
+			"WatchPR", PRWatchInput{
+				PRURL:              prURL,
+				LastKnownCommitSHA: lastCommitSHA,
+				LastSeenCommentIDs: seenCommentIDs,
+				PollInterval:       "30s",
+			},
+		).Get(ctx, &event)
 		if err != nil {
+			logger.Error("PR watch failed", "error", err)
 			return WorkflowResult{
-				Success:       false,
-				Summary:       "Failed to create pull request",
-				Details:       map[string]any{"error": err.Error()},
-				WorkspacePath: workspacePath,
-				ErrorMessage:  err.Error(),
+				Success: false, Summary: "PR watch failed",
+				PRURL: prURL, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
+				FeedbackIterations: feedbackIterations,
 			}, nil
 		}
 
-		prURL = prResult.PRURL
-		logger.Info("Pull request created", "url", prURL)
-
-		// Step 4: Wait for CI results if requested
-		if input.WaitForCI {
-			ciCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-				StartToCloseTimeout: 20 * time.Minute,
-				RetryPolicy: &temporal.RetryPolicy{
-					MaximumAttempts: 1,
+		// Terminal events
+		if event.Type == PREventMerged {
+			logger.Info("PR merged", "iterations", feedbackIterations)
+			return WorkflowResult{
+				Success: true,
+				Summary: fmt.Sprintf("PR merged after %d feedback iterations", feedbackIterations),
+				Details: map[string]any{
+					"files_modified": agentResult.FilesModified,
+					"changes_made":   true,
 				},
-			})
+				PRURL: prURL, CIStatus: "success", WorkspacePath: workspacePath,
+				FeedbackIterations: feedbackIterations,
+			}, nil
+		}
+		if event.Type == PREventClosed {
+			logger.Info("PR closed without merge", "iterations", feedbackIterations)
+			return WorkflowResult{
+				Success: false, Summary: "PR was closed without merging",
+				PRURL: prURL, WorkspacePath: workspacePath, ErrorMessage: "PR closed",
+				FeedbackIterations: feedbackIterations,
+			}, nil
+		}
 
-			var ciResult CIResult
-			err = workflow.ExecuteActivity(ciCtx, "WaitForCICompletion", CIWaitInput{
-				PRNumber: prResult.PRNumber,
-				RepoURL:  input.RepoURL,
-			}).Get(ctx, &ciResult)
-			if err != nil {
-				logger.Warn("CI wait failed", "error", err)
-			} else {
-				ciStatus = ciResult.Status
-				logger.Info("CI status", "status", ciStatus)
+		// Build feedback context for agent
+		feedbackContext := map[string]any{
+			"feedback_type":  string(event.Type),
+			"iteration":      feedbackIterations,
+			"pr_url":         prURL,
+			"original_task":  input.TaskDescription,
+		}
+
+		feedbackTask := buildFeedbackTaskDescription(input.TaskDescription, event)
+
+		if event.Type == PREventCIFailure {
+			ciStatus = "failure"
+			feedbackContext["ci_failure_details"] = event.CIDetails
+		}
+		if event.Type == PREventReviewFeedback {
+			feedbackContext["review_comments"] = event.Comments
+		}
+
+		// Re-invoke agent with feedback
+		var fixResult AgentResult
+		err = workflow.ExecuteActivity(
+			workflow.WithActivityOptions(ctx, agentOpts),
+			"AgentReasoningStep", workspacePath, feedbackTask, checklist, feedbackContext,
+		).Get(ctx, &fixResult)
+		if err != nil {
+			logger.Error("Agent fix attempt failed", "error", err, "iteration", feedbackIterations)
+			seenCommentIDs = updateSeenCommentIDs(seenCommentIDs, event.Comments)
+			continue
+		}
+
+		if !fixResult.ChangesMade {
+			logger.Info("Agent made no changes", "iteration", feedbackIterations)
+			seenCommentIDs = updateSeenCommentIDs(seenCommentIDs, event.Comments)
+			continue
+		}
+
+		// Commit and push fixes
+		fixCommitMsg := fixResult.CommitMessage
+		if fixCommitMsg == "" {
+			fixCommitMsg = fmt.Sprintf("Address feedback (iteration %d)", feedbackIterations)
+		}
+
+		var fixCommit CommitResult
+		err = workflow.ExecuteActivity(
+			workflow.WithActivityOptions(ctx, gitOpts),
+			"CommitChanges", workspacePath, fixCommitMsg,
+		).Get(ctx, &fixCommit)
+		if err != nil {
+			logger.Error("Commit failed", "error", err, "iteration", feedbackIterations)
+			continue
+		}
+		lastCommitSHA = fixCommit.CommitSHA
+
+		var fixPush PushResult
+		err = workflow.ExecuteActivity(
+			workflow.WithActivityOptions(ctx, gitOpts),
+			"PushChanges", workspacePath,
+		).Get(ctx, &fixPush)
+		if err != nil {
+			logger.Error("Push failed", "error", err, "iteration", feedbackIterations)
+			continue
+		}
+
+		ciStatus = "pending"
+		seenCommentIDs = updateSeenCommentIDs(seenCommentIDs, event.Comments)
+		logger.Info("Fix pushed", "commit", lastCommitSHA, "iteration", feedbackIterations)
+	}
+}
+
+func extractRepoSlug(repoURL string) string {
+	repoURL = strings.TrimRight(repoURL, "/")
+	repoURL = strings.TrimSuffix(repoURL, ".git")
+	parts := strings.Split(repoURL, "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	return repoURL
+}
+
+func buildFeedbackTaskDescription(originalTask string, event PREvent) string {
+	switch event.Type {
+	case PREventCIFailure:
+		return fmt.Sprintf(
+			"Fix CI failure for: %s\n\nCI failure details:\n%s",
+			originalTask, event.CIDetails,
+		)
+	case PREventReviewFeedback:
+		var lines []string
+		for _, c := range event.Comments {
+			line := fmt.Sprintf("- %s: %s", c.Author, c.Body)
+			if c.Path != "" {
+				line += fmt.Sprintf(" (file: %s, line: %d)", c.Path, c.Line)
 			}
+			lines = append(lines, line)
+		}
+		return fmt.Sprintf(
+			"Address review feedback for: %s\n\nReview comments:\n%s",
+			originalTask, strings.Join(lines, "\n"),
+		)
+	default:
+		return originalTask
+	}
+}
+
+func updateSeenCommentIDs(existing []int64, comments []Comment) []int64 {
+	seen := make(map[int64]bool, len(existing))
+	for _, id := range existing {
+		seen[id] = true
+	}
+	for _, c := range comments {
+		if !seen[c.ID] {
+			existing = append(existing, c.ID)
 		}
 	}
-
-	return WorkflowResult{
-		Success: true,
-		Summary: agentResult.Summary,
-		Details: map[string]any{
-			"files_modified": agentResult.FilesModified,
-			"changes_made":   agentResult.ChangesMade,
-			"reasoning":      agentResult.Reasoning,
-		},
-		PRURL:         prURL,
-		CIStatus:      ciStatus,
-		WorkspacePath: workspacePath,
-	}, nil
+	return existing
 }

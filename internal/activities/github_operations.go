@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v68/github"
+	"go.temporal.io/sdk/activity"
 )
 
 type CIStatus string
@@ -27,8 +29,32 @@ type GitHubActivities struct {
 type PRCreateResult struct {
 	PRURL    string `json:"pr_url"`
 	PRNumber int    `json:"pr_number"`
+	HeadSHA  string `json:"head_sha,omitempty"`
 	Success  bool   `json:"success"`
 	Error    string `json:"error,omitempty"`
+}
+
+type PREventType string
+
+const (
+	PREventCIFailure      PREventType = "ci_failure"
+	PREventReviewFeedback PREventType = "review_feedback"
+	PREventMerged         PREventType = "merged"
+	PREventClosed         PREventType = "closed"
+)
+
+type PRWatchInput struct {
+	PRURL              string  `json:"pr_url"`
+	LastKnownCommitSHA string  `json:"last_known_commit_sha"`
+	LastSeenCommentIDs []int64 `json:"last_seen_comment_ids"`
+	PollInterval       string  `json:"poll_interval,omitempty"`
+}
+
+type PREvent struct {
+	Type      PREventType `json:"type"`
+	CIDetails string      `json:"ci_details,omitempty"`
+	Comments  []Comment   `json:"comments,omitempty"`
+	PRState   string      `json:"pr_state"`
 }
 
 type CIStatusResult struct {
@@ -96,6 +122,7 @@ func (a *GitHubActivities) CreatePullRequest(ctx context.Context, input PRCreate
 	return PRCreateResult{
 		PRURL:    pr.GetHTMLURL(),
 		PRNumber: pr.GetNumber(),
+		HeadSHA:  pr.GetHead().GetSHA(),
 		Success:  true,
 	}, nil
 }
@@ -234,6 +261,194 @@ func (a *GitHubActivities) GetReviewComments(ctx context.Context, prURL string) 
 		Comments: comments,
 		Success:  true,
 	}, nil
+}
+
+type watcherState struct {
+	LastSeenCommentIDs []int64 `json:"last_seen_comment_ids"`
+	LastKnownCommitSHA string  `json:"last_known_commit_sha"`
+}
+
+func (a *GitHubActivities) WatchPR(ctx context.Context, input PRWatchInput) (PREvent, error) {
+	owner, repo, prNumber, err := parsePRURL(input.PRURL)
+	if err != nil {
+		return PREvent{}, err
+	}
+
+	pollInterval := 30 * time.Second
+	if input.PollInterval != "" {
+		if d, err := time.ParseDuration(input.PollInterval); err == nil {
+			pollInterval = d
+		}
+	}
+
+	lastCommitSHA := input.LastKnownCommitSHA
+	seenIDs := make(map[int64]bool, len(input.LastSeenCommentIDs))
+	for _, id := range input.LastSeenCommentIDs {
+		seenIDs[id] = true
+	}
+
+	// Restore state from heartbeat if activity was restarted
+	if activity.HasHeartbeatDetails(ctx) {
+		var saved watcherState
+		if err := activity.GetHeartbeatDetails(ctx, &saved); err == nil {
+			lastCommitSHA = saved.LastKnownCommitSHA
+			for _, id := range saved.LastSeenCommentIDs {
+				seenIDs[id] = true
+			}
+		}
+	}
+
+	slog.Info("Watching PR", "url", input.PRURL, "poll_interval", pollInterval)
+
+	for {
+		activity.RecordHeartbeat(ctx, watcherState{
+			LastSeenCommentIDs: mapKeys(seenIDs),
+			LastKnownCommitSHA: lastCommitSHA,
+		})
+
+		if ctx.Err() != nil {
+			return PREvent{}, ctx.Err()
+		}
+
+		// Check PR state
+		pr, _, err := a.Client.PullRequests.Get(ctx, owner, repo, prNumber)
+		if err != nil {
+			slog.Warn("Failed to get PR", "error", err)
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		if pr.GetMerged() {
+			return PREvent{Type: PREventMerged, PRState: "merged"}, nil
+		}
+		if pr.GetState() == "closed" {
+			return PREvent{Type: PREventClosed, PRState: "closed"}, nil
+		}
+
+		// Check CI status on our commit
+		if lastCommitSHA != "" {
+			combinedStatus, _, err := a.Client.Repositories.GetCombinedStatus(ctx, owner, repo, lastCommitSHA, nil)
+			if err == nil {
+				state := combinedStatus.GetState()
+				if state == "failure" || state == "error" {
+					var details []string
+					for _, s := range combinedStatus.Statuses {
+						details = append(details, fmt.Sprintf("%s: %s - %s",
+							s.GetContext(), s.GetState(), s.GetDescription()))
+					}
+					return PREvent{
+						Type:      PREventCIFailure,
+						CIDetails: strings.Join(details, "\n"),
+						PRState:   "open",
+					}, nil
+				}
+			}
+
+			// Also check GitHub Actions check runs
+			checkRuns, _, err := a.Client.Checks.ListCheckRunsForRef(ctx, owner, repo, lastCommitSHA, nil)
+			if err == nil && checkRuns != nil {
+				for _, cr := range checkRuns.CheckRuns {
+					if cr.GetStatus() == "completed" && cr.GetConclusion() == "failure" {
+						detail := fmt.Sprintf("%s: failure", cr.GetName())
+						if cr.Output != nil && cr.Output.Summary != nil {
+							detail += " - " + cr.Output.GetSummary()
+						}
+						return PREvent{
+							Type:      PREventCIFailure,
+							CIDetails: detail,
+							PRState:   "open",
+						}, nil
+					}
+				}
+			}
+		}
+
+		// Check for new review comments with CHANGES_REQUESTED
+		reviews, _, err := a.Client.PullRequests.ListReviews(ctx, owner, repo, prNumber, nil)
+		if err == nil {
+			hasChangesRequested := false
+			for _, r := range reviews {
+				if r.GetState() == "CHANGES_REQUESTED" {
+					hasChangesRequested = true
+					break
+				}
+			}
+
+			if hasChangesRequested {
+				var newComments []Comment
+
+				// Inline review comments
+				reviewComments, _, _ := a.Client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
+				for _, rc := range reviewComments {
+					if !seenIDs[rc.GetID()] {
+						c := Comment{
+							ID:     rc.GetID(),
+							Author: rc.GetUser().GetLogin(),
+							Body:   rc.GetBody(),
+							Path:   rc.GetPath(),
+							Line:   rc.GetLine(),
+						}
+						if rc.CreatedAt != nil {
+							c.CreatedAt = rc.CreatedAt.Format("2006-01-02T15:04:05Z")
+						}
+						newComments = append(newComments, c)
+						seenIDs[rc.GetID()] = true
+					}
+				}
+
+				// Issue comments
+				issueComments, _, _ := a.Client.Issues.ListComments(ctx, owner, repo, prNumber, nil)
+				for _, ic := range issueComments {
+					if !seenIDs[ic.GetID()] {
+						c := Comment{
+							ID:     ic.GetID(),
+							Author: ic.GetUser().GetLogin(),
+							Body:   ic.GetBody(),
+						}
+						if ic.CreatedAt != nil {
+							c.CreatedAt = ic.CreatedAt.Format("2006-01-02T15:04:05Z")
+						}
+						newComments = append(newComments, c)
+						seenIDs[ic.GetID()] = true
+					}
+				}
+
+				// Review bodies
+				for _, r := range reviews {
+					if r.GetBody() != "" && !seenIDs[r.GetID()] {
+						c := Comment{
+							ID:     r.GetID(),
+							Author: r.GetUser().GetLogin(),
+							Body:   fmt.Sprintf("[Review: %s] %s", r.GetState(), r.GetBody()),
+						}
+						if r.SubmittedAt != nil {
+							c.CreatedAt = r.SubmittedAt.Format("2006-01-02T15:04:05Z")
+						}
+						newComments = append(newComments, c)
+						seenIDs[r.GetID()] = true
+					}
+				}
+
+				if len(newComments) > 0 {
+					return PREvent{
+						Type:     PREventReviewFeedback,
+						Comments: newComments,
+						PRState:  "open",
+					}, nil
+				}
+			}
+		}
+
+		time.Sleep(pollInterval)
+	}
+}
+
+func mapKeys(m map[int64]bool) []int64 {
+	keys := make([]int64, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func parseRepoString(repo string) (owner, name string, err error) {

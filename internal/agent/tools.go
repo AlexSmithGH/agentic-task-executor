@@ -48,6 +48,20 @@ func GetToolDefinitions() []anthropic.ToolUnionParam {
 			},
 			[]string{"command"},
 		),
+		toolDef("write_file",
+			"Write content to a file in the workspace. Creates the file if it doesn't exist, overwrites if it does.",
+			map[string]any{
+				"file_path": map[string]any{
+					"type":        "string",
+					"description": "The path to the file relative to the workspace root",
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "The content to write to the file",
+				},
+			},
+			[]string{"file_path", "content"},
+		),
 		toolDef("search_files",
 			"Search for a pattern in files using grep. Returns matching lines with file names.",
 			map[string]any{

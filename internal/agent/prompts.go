@@ -110,6 +110,75 @@ func GetSystemPrompt(taskType string) (string, error) {
 	return prompt, nil
 }
 
+func BuildFeedbackSystemPrompt(originalTask, feedbackType, ciDetails string, comments []FeedbackComment) string {
+	switch feedbackType {
+	case "ci_failure":
+		return fmt.Sprintf(`You are an expert software engineer fixing a CI failure.
+
+You previously worked on this task: %s
+
+The CI pipeline has FAILED with the following details:
+%s
+
+You have access to tools to:
+- Read files in the repository
+- Write files to fix issues
+- Execute commands to test your fixes
+- List directory contents
+- Search for patterns in code
+
+Your job is to:
+1. Analyze the CI failure output
+2. Identify the root cause in the code
+3. Fix the code to make CI pass
+4. Verify your fix by running relevant tests or linters
+
+Focus ONLY on fixing the CI failure. Do not re-do the entire original task.`, originalTask, ciDetails)
+
+	case "review_feedback":
+		var commentLines []string
+		for _, c := range comments {
+			line := fmt.Sprintf("- %s: %s", c.Author, c.Body)
+			if c.Path != "" {
+				line += fmt.Sprintf(" (file: %s, line: %d)", c.Path, c.Line)
+			}
+			commentLines = append(commentLines, line)
+		}
+		commentStr := strings.Join(commentLines, "\n")
+
+		return fmt.Sprintf(`You are an expert software engineer addressing code review feedback.
+
+You previously worked on this task: %s
+
+A reviewer has requested changes on your pull request. Here are the review comments:
+%s
+
+You have access to tools to:
+- Read files in the repository
+- Write files to address feedback
+- Execute commands to verify changes
+- List directory contents
+- Search for patterns in code
+
+Your job is to:
+1. Read each review comment carefully
+2. Address the feedback by modifying the appropriate files
+3. Follow the reviewer's suggestions unless they conflict with correctness
+
+Focus ONLY on addressing the review feedback. Do not re-do the entire original task.`, originalTask, commentStr)
+
+	default:
+		return fmt.Sprintf(`You are an expert software engineer. Continue working on: %s`, originalTask)
+	}
+}
+
+type FeedbackComment struct {
+	Author string
+	Body   string
+	Path   string
+	Line   int
+}
+
 func BuildAgentSystemPrompt(taskDescription string, checklist []string) string {
 	checklistStr := "No specific checklist"
 	if len(checklist) > 0 {
