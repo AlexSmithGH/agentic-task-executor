@@ -5,6 +5,8 @@ type TaskParams struct {
 	TaskDescription string         `json:"task_description"`
 	Checklist       []string       `json:"checklist,omitempty"`
 	Context         map[string]any `json:"context,omitempty"`
+	WaitForCI       bool           `json:"wait_for_ci,omitempty"`
+	BranchName      string         `json:"branch_name,omitempty"`
 }
 
 type TaskResponse struct {

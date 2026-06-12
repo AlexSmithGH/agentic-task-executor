@@ -121,6 +121,10 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	var prURL string
 	var ciStatus string
 	var feedbackIterations int
+	var phase string
+	var auditReport string
+
+	phase = "initializing"
 
 	err := workflow.SetQueryHandler(ctx, "get_status", func() (map[string]any, error) {
 		return map[string]any{
@@ -128,6 +132,8 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			"pr_url":              prURL,
 			"ci_status":           ciStatus,
 			"feedback_iterations": feedbackIterations,
+			"phase":               phase,
+			"audit_report":        auditReport,
 		}, nil
 	})
 	if err != nil {
@@ -174,13 +180,15 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		StartToCloseTimeout: 7 * 24 * time.Hour,
 		HeartbeatTimeout:    2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 0, // infinite
+			MaximumAttempts: 0,
 			InitialInterval: 10 * time.Second,
 			MaximumInterval: 5 * time.Minute,
 		},
 	}
 
-	// Step 1: Clone repository
+	// ===== Phase 1: Setup =====
+	phase = "cloning"
+
 	workspaceDir := fmt.Sprintf("/tmp/agentic-workspaces/%s", workflow.GetInfo(ctx).WorkflowExecution.ID)
 
 	var cloneResult CloneResult
@@ -201,7 +209,6 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	}
 	logger.Info("Repository cloned", "path", workspacePath, "default_branch", defaultBranch)
 
-	// Step 2: Create branch
 	branchName := input.BranchName
 	if branchName == "" {
 		branchName = fmt.Sprintf("agentic/%s", workflow.GetInfo(ctx).WorkflowExecution.ID)
@@ -218,9 +225,10 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			Details: map[string]any{"error": err.Error()}, WorkspacePath: workspacePath, ErrorMessage: err.Error(),
 		}, nil
 	}
-	logger.Info("Branch created", "branch", branchName)
 
-	// Step 3: Execute agent reasoning
+	// ===== Phase 2: Audit =====
+	phase = "auditing"
+
 	checklist := input.Checklist
 	if checklist == nil {
 		checklist = []string{}
@@ -247,24 +255,74 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			Details: map[string]any{"error": agentResult.Error}, WorkspacePath: workspacePath, ErrorMessage: agentResult.Error,
 		}, nil
 	}
-	logger.Info("Agent completed", "summary", agentResult.Summary, "changes_made", agentResult.ChangesMade)
 
-	if !agentResult.ChangesMade {
+	auditReport = agentResult.Summary
+	logger.Info("Audit completed", "summary_length", len(auditReport))
+
+	// ===== Phase 3: Await approval =====
+	phase = "awaiting_approval"
+	logger.Info("Awaiting human approval to proceed with implementation")
+
+	approvalCh := workflow.GetSignalChannel(ctx, "approval")
+	var approval map[string]any
+	approvalCh.Receive(ctx, &approval)
+
+	approved, _ := approval["approved"].(bool)
+	reason, _ := approval["reason"].(string)
+
+	if !approved {
+		logger.Info("Implementation declined", "reason", reason)
 		return WorkflowResult{
-			Success: true, Summary: agentResult.Summary,
+			Success: true, Summary: "Audit complete, implementation declined",
 			Details: map[string]any{
-				"files_modified": agentResult.FilesModified,
-				"changes_made":   false,
-				"reasoning":      agentResult.Reasoning,
+				"audit_report": auditReport,
+				"reason":       reason,
 			},
 			WorkspacePath: workspacePath,
 		}, nil
 	}
 
-	// Step 4: Commit and push
-	commitMsg := agentResult.CommitMessage
+	logger.Info("Implementation approved", "reason", reason)
+
+	// ===== Phase 4: Implementation =====
+	phase = "implementing"
+
+	implPrompt := buildImplementationPrompt(auditReport, input.TaskDescription)
+	implContext := map[string]any{
+		"phase":        "implementation",
+		"audit_report": auditReport,
+	}
+
+	var implResult AgentResult
+	err = workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, agentOpts),
+		"AgentReasoningStep", workspacePath, implPrompt, checklist, implContext,
+	).Get(ctx, &implResult)
+	if err != nil {
+		return WorkflowResult{
+			Success: false, Summary: "Implementation agent failed",
+			Details: map[string]any{"error": err.Error(), "audit_report": auditReport},
+			WorkspacePath: workspacePath, ErrorMessage: err.Error(),
+		}, nil
+	}
+
+	if !implResult.ChangesMade {
+		return WorkflowResult{
+			Success: true, Summary: "Audit complete, no changes needed",
+			Details: map[string]any{
+				"audit_report":  auditReport,
+				"implementation": implResult.Summary,
+			},
+			WorkspacePath: workspacePath,
+		}, nil
+	}
+
+	// ===== Phase 5: Commit, push, PR =====
+	phase = "creating_pr"
+
+	commitMsg := implResult.CommitMessage
 	if commitMsg == "" {
-		commitMsg = "Agent changes"
+		commitMsg = "Implement audit recommendations"
 	}
 
 	var commitResult CommitResult
@@ -280,15 +338,14 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	}
 	lastCommitSHA := commitResult.CommitSHA
 
-	// If commit was empty (no actual file changes), skip PR creation
 	if lastCommitSHA == "" {
 		logger.Info("No file changes to commit, skipping PR creation")
 		return WorkflowResult{
-			Success: true, Summary: agentResult.Summary,
+			Success: true, Summary: implResult.Summary,
 			Details: map[string]any{
-				"files_modified": agentResult.FilesModified,
+				"audit_report":   auditReport,
+				"implementation": implResult.Summary,
 				"changes_made":   false,
-				"reasoning":      agentResult.Reasoning,
 			},
 			WorkspacePath: workspacePath,
 		}, nil
@@ -306,7 +363,6 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		}, nil
 	}
 
-	// Step 5: Create PR
 	var prResult PRResult
 	err = workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, prOpts),
@@ -315,7 +371,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			BranchName:      branchName,
 			CommitMessage:   commitMsg,
 			TaskDescription: input.TaskDescription,
-			FilesModified:   agentResult.FilesModified,
+			FilesModified:   implResult.FilesModified,
 			Repo:            extractRepoSlug(input.RepoURL),
 			BaseBranch:      defaultBranch,
 		},
@@ -332,27 +388,26 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 	}
 	logger.Info("Pull request created", "url", prURL)
 
-	// If not watching for CI/feedback, return now
 	if !input.WaitForCI {
 		return WorkflowResult{
-			Success: true, Summary: agentResult.Summary,
+			Success: true, Summary: implResult.Summary,
 			Details: map[string]any{
-				"files_modified": agentResult.FilesModified,
+				"audit_report":   auditReport,
+				"files_modified": implResult.FilesModified,
 				"changes_made":   true,
-				"reasoning":      agentResult.Reasoning,
 			},
 			PRURL: prURL, WorkspacePath: workspacePath,
 		}, nil
 	}
 
-	// Step 6: Feedback loop — watch PR until merged or closed
+	// ===== Phase 6: Feedback loop =====
+	phase = "feedback_loop"
 	var seenCommentIDs []int64
 
 	for {
 		feedbackIterations++
 		logger.Info("Feedback loop iteration", "iteration", feedbackIterations)
 
-		// Watch PR for events
 		var event PREvent
 		err = workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, watchOpts),
@@ -372,14 +427,14 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			}, nil
 		}
 
-		// Terminal events
 		if event.Type == PREventMerged {
 			logger.Info("PR merged", "iterations", feedbackIterations)
 			return WorkflowResult{
 				Success: true,
 				Summary: fmt.Sprintf("PR merged after %d feedback iterations", feedbackIterations),
 				Details: map[string]any{
-					"files_modified": agentResult.FilesModified,
+					"audit_report":   auditReport,
+					"files_modified": implResult.FilesModified,
 					"changes_made":   true,
 				},
 				PRURL: prURL, CIStatus: "success", WorkspacePath: workspacePath,
@@ -387,7 +442,6 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			}, nil
 		}
 		if event.Type == PREventClosed {
-			logger.Info("PR closed without merge", "iterations", feedbackIterations)
 			return WorkflowResult{
 				Success: false, Summary: "PR was closed without merging",
 				PRURL: prURL, WorkspacePath: workspacePath, ErrorMessage: "PR closed",
@@ -395,14 +449,12 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			}, nil
 		}
 
-		// Build feedback context for agent
 		feedbackContext := map[string]any{
-			"feedback_type":  string(event.Type),
-			"iteration":      feedbackIterations,
-			"pr_url":         prURL,
-			"original_task":  input.TaskDescription,
+			"feedback_type": string(event.Type),
+			"iteration":     feedbackIterations,
+			"pr_url":        prURL,
+			"original_task": input.TaskDescription,
 		}
-
 		feedbackTask := buildFeedbackTaskDescription(input.TaskDescription, event)
 
 		if event.Type == PREventCIFailure {
@@ -413,7 +465,6 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			feedbackContext["review_comments"] = event.Comments
 		}
 
-		// Re-invoke agent with feedback
 		var fixResult AgentResult
 		err = workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, agentOpts),
@@ -426,12 +477,10 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		}
 
 		if !fixResult.ChangesMade {
-			logger.Info("Agent made no changes", "iteration", feedbackIterations)
 			seenCommentIDs = updateSeenCommentIDs(seenCommentIDs, event.Comments)
 			continue
 		}
 
-		// Commit and push fixes
 		fixCommitMsg := fixResult.CommitMessage
 		if fixCommitMsg == "" {
 			fixCommitMsg = fmt.Sprintf("Address feedback (iteration %d)", feedbackIterations)
@@ -443,7 +492,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			"CommitChanges", workspacePath, fixCommitMsg,
 		).Get(ctx, &fixCommit)
 		if err != nil {
-			logger.Error("Commit failed", "error", err, "iteration", feedbackIterations)
+			logger.Error("Commit failed", "error", err)
 			continue
 		}
 		lastCommitSHA = fixCommit.CommitSHA
@@ -454,7 +503,7 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 			"PushChanges", workspacePath,
 		).Get(ctx, &fixPush)
 		if err != nil {
-			logger.Error("Push failed", "error", err, "iteration", feedbackIterations)
+			logger.Error("Push failed", "error", err)
 			continue
 		}
 
@@ -462,6 +511,19 @@ func AgenticTaskWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowRes
 		seenCommentIDs = updateSeenCommentIDs(seenCommentIDs, event.Comments)
 		logger.Info("Fix pushed", "commit", lastCommitSHA, "iteration", feedbackIterations)
 	}
+}
+
+func buildImplementationPrompt(auditReport, originalTask string) string {
+	return fmt.Sprintf(`Implement the recommended changes from the following audit.
+
+Original task: %s
+
+Audit findings:
+%s
+
+Use write_file to create or modify files. Use execute_command to verify your changes.
+Focus on actionable, high-priority items. Skip findings that require external action.
+After making all changes, summarize what you implemented.`, originalTask, auditReport)
 }
 
 func extractRepoSlug(repoURL string) string {

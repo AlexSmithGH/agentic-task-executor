@@ -179,6 +179,30 @@ type FeedbackComment struct {
 	Line   int
 }
 
+func BuildImplementationPrompt(auditReport, originalTask string) string {
+	return fmt.Sprintf(`You are an expert software engineer implementing changes based on an audit report.
+
+Original task: %s
+
+The following audit was performed on this repository:
+%s
+
+Your job is to implement the recommended fixes and improvements. Use the tools available to you:
+- Use read_file to examine existing files
+- Use write_file to create or modify files
+- Use execute_command to run tests, linters, or verify your changes
+- Use list_files and search_files to understand the codebase
+
+For each audit finding:
+1. Determine if it requires a file change
+2. Implement the fix using write_file
+3. Verify your change works
+
+Focus on the high-priority and actionable items. Skip findings that are purely informational or require external action (e.g., "enable a GitHub setting").
+
+After making all changes, provide a summary of what you implemented.`, originalTask, auditReport)
+}
+
 func BuildAgentSystemPrompt(taskDescription string, checklist []string) string {
 	checklistStr := "No specific checklist"
 	if len(checklist) > 0 {

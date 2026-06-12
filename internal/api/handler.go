@@ -58,6 +58,8 @@ func (h *Handler) ExecuteTask(w http.ResponseWriter, r *http.Request) {
 		TaskDescription: params.TaskDescription,
 		Checklist:       params.Checklist,
 		Context:         params.Context,
+		WaitForCI:       params.WaitForCI,
+		BranchName:      params.BranchName,
 	}
 
 	slog.Info("Starting workflow", "workflow_id", workflowID, "repo", params.RepoURL)
@@ -130,6 +132,14 @@ func (h *Handler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if execInfo.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_FAILED {
 		resp.Error = "Workflow execution failed"
+	} else if execInfo.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		queryResult, err := h.temporalClient.QueryWorkflow(r.Context(), workflowID, "", "get_status")
+		if err == nil {
+			var queryData map[string]any
+			if err := queryResult.Get(&queryData); err == nil {
+				resp.Result = queryData
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
